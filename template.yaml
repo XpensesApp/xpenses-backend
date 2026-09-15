@@ -1,0 +1,284 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Xpenses backend API service
+
+Globals:
+  Function:
+    Timeout: 60
+    Runtime: python3.13
+    MemorySize: 128
+
+Parameters:
+  StageName:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+    Description: Deployment stage
+
+Mappings:
+  TableNames:
+    dev:
+      UsersTableName: xpenses-users-table-prod
+      TransactionsTableName: xpenses-transactions-table-prod
+    prod:
+      UsersTableName: xpenses-users-table-prod
+      TransactionsTableName: xpenses-transactions-table-prod
+
+  CognitoConfig:
+    dev:
+      UserPoolId: us-east-1_O00lHTebz
+      AppClientId: 6bc94amej9csqr0du5p3bdmcvf
+      Region: us-east-1
+    prod:
+      UserPoolId: us-east-1_O00lHTebz
+      AppClientId: 6bc94amej9csqr0du5p3bdmcvf
+      Region: us-east-1
+
+Resources:
+  #########################################
+  # Lambda Layer: shared models
+  #########################################
+  ModelsLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: !Sub xpenses-models-${StageName}
+      ContentUri: layers/models/
+      CompatibleRuntimes:
+        - python3.13
+    Metadata:
+      BuildMethod: python3.13
+
+  #########################################
+  # API Gateway
+  #########################################
+  XpensesApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub XpensesApi-${StageName}
+      StageName: !Ref StageName
+      Cors:
+        AllowOrigin: "'*'"
+        AllowHeaders: "'*'"
+        AllowMethods: "'*'"
+
+  #########################################
+  # Gateway Responses (CORS on API Gateway-level errors)
+  #########################################
+  GatewayResponseDefault4xx:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref XpensesApi
+      ResponseType: DEFAULT_4XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+
+  GatewayResponseDefault5xx:
+    Type: AWS::ApiGateway::GatewayResponse
+    Properties:
+      RestApiId: !Ref XpensesApi
+      ResponseType: DEFAULT_5XX
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+
+  #########################################
+  # Lambda: Auth Sync
+  #########################################
+  AuthSyncFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub auth-sync-${StageName}
+      CodeUri: api/auth/sync/
+      Handler: app.lambda_handler
+
+      Environment:
+        Variables:
+          USERS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - UsersTableName
+
+          COGNITO_USER_POOL_ID: !FindInMap
+            - CognitoConfig
+            - !Ref StageName
+            - UserPoolId
+
+          COGNITO_APP_CLIENT_ID: !FindInMap
+            - CognitoConfig
+            - !Ref StageName
+            - AppClientId
+
+          COGNITO_REGION: !FindInMap
+            - CognitoConfig
+            - !Ref StageName
+            - Region
+
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${UsersTable}
+                  - UsersTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - UsersTableName
+
+      Events:
+        AuthSync:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /auth/sync
+            Method: POST
+
+  #########################################
+  # Lambda: Transactions CRUD (unprotected for now)
+  #########################################
+  AddTransactionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub transactions-add-${StageName}
+      CodeUri: api/transactions/add/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          TRANSACTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - TransactionsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TransactionsTable}
+                  - TransactionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - TransactionsTableName
+      Events:
+        AddTransaction:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /transactions
+            Method: POST
+
+  GetTransactionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub transactions-get-${StageName}
+      CodeUri: api/transactions/get/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          TRANSACTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - TransactionsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TransactionsTable}
+                  - TransactionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - TransactionsTableName
+      Events:
+        GetTransactions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /transactions
+            Method: GET
+
+  EditTransactionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub transactions-edit-${StageName}
+      CodeUri: api/transactions/edit/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          TRANSACTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - TransactionsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TransactionsTable}
+                  - TransactionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - TransactionsTableName
+      Events:
+        EditTransaction:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /transactions
+            Method: PUT
+
+  DeleteTransactionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub transactions-delete-${StageName}
+      CodeUri: api/transactions/delete/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          TRANSACTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - TransactionsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:DeleteItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TransactionsTable}
+                  - TransactionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - TransactionsTableName
+      Events:
+        DeleteTransaction:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /transactions
+            Method: DELETE
+
+Outputs:
+  ApiUrl:
+    Description: Base URL for the API
+    Value: !Sub "https://${XpensesApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}"
