@@ -22,9 +22,11 @@ Mappings:
     dev:
       UsersTableName: xpenses-users-table-prod
       TransactionsTableName: xpenses-transactions-table-prod
+      SubscriptionsTableName: xpenses-suscriptions-table-prod
     prod:
       UsersTableName: xpenses-users-table-prod
       TransactionsTableName: xpenses-transactions-table-prod
+      SubscriptionsTableName: xpenses-suscriptions-table-prod
 
   CognitoConfig:
     dev:
@@ -277,6 +279,201 @@ Resources:
             RestApiId: !Ref XpensesApi
             Path: /transactions
             Method: DELETE
+
+  #########################################
+  # Lambda: Subscriptions CRUD (unprotected for now)
+  #########################################
+  AddSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub subscriptions-add-${StageName}
+      CodeUri: api/subscriptions/add/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          SUBSCRIPTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - SubscriptionsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${SubscriptionsTable}
+                  - SubscriptionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - SubscriptionsTableName
+      Events:
+        AddSubscription:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /subscriptions
+            Method: POST
+
+  GetSubscriptionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub subscriptions-get-${StageName}
+      CodeUri: api/subscriptions/get/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          SUBSCRIPTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - SubscriptionsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${SubscriptionsTable}
+                  - SubscriptionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - SubscriptionsTableName
+      Events:
+        GetSubscriptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /subscriptions
+            Method: GET
+
+  EditSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub subscriptions-edit-${StageName}
+      CodeUri: api/subscriptions/edit/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          SUBSCRIPTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - SubscriptionsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${SubscriptionsTable}
+                  - SubscriptionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - SubscriptionsTableName
+      Events:
+        EditSubscription:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /subscriptions
+            Method: PUT
+
+  DeleteSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub subscriptions-delete-${StageName}
+      CodeUri: api/subscriptions/delete/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          SUBSCRIPTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - SubscriptionsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:DeleteItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${SubscriptionsTable}
+                  - SubscriptionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - SubscriptionsTableName
+      Events:
+        DeleteSubscription:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /subscriptions
+            Method: DELETE
+
+  #########################################
+  # Lambda: Daily Billing (subscriptions -> pending transactions)
+  #########################################
+  DailyBillingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub billing-daily-${StageName}
+      CodeUri: api/billing/daily/
+      Handler: app.lambda_handler
+      Timeout: 300 # batch job, not request/response — more headroom than the API Globals default
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          SUBSCRIPTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - SubscriptionsTableName
+          TRANSACTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - TransactionsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${SubscriptionsTable}/index/BillingDayStatusIndex
+                  - SubscriptionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - SubscriptionsTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TransactionsTable}
+                  - TransactionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - TransactionsTableName
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            # 06:00 UTC daily — adjust to taste, this is just a placeholder slot.
+            Schedule: cron(0 6 * * ? *)
+            Name: !Sub xpenses-daily-billing-${StageName}
+            Description: Converts due subscriptions into pending transactions
+            Enabled: true
 
 Outputs:
   ApiUrl:
