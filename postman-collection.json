@@ -1,0 +1,249 @@
+{
+  "info": {
+    "_postman_id": "b6f1a2e4-3c1e-4b8a-9d2a-3f7e2a6c9a11",
+    "name": "Xpenses Backend",
+    "description": "Transactions and Subscriptions CRUD endpoints — both protected by a Cognito Lambda Authorizer. Neither takes `email` as input at all anymore — it's derived from the verified Bearer token, so every request needs Authorization: Bearer {{authToken}}. Get a token via `api/auth/sync/get_test_token.py` locally and paste it into the authToken environment variable (see the companion xpenses-backend.postman_environment.json — baseUrl/authToken live there, not in this collection). See transactions-endpoint-handoff.md / subscription_handoff.md in the repo for full field-by-field detail.\n\nEach folder is runnable top-to-bottom: Create sets the id/date it produces as a collection variable, which List/Update/Delete then reuse automatically.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "todayDate", "value": "", "type": "string" },
+    { "key": "transactionId", "value": "", "type": "string" },
+    { "key": "transactionDate", "value": "", "type": "string" },
+    { "key": "subscriptionId", "value": "", "type": "string" }
+  ],
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{authToken}}", "type": "string" }]
+  },
+  "item": [
+    {
+      "name": "Transactions",
+      "description": "Protected by CognitoAuthorizer. Inherits the collection-level Bearer auth ({{authToken}}, from the environment) — get a real token by running `AWS_PROFILE=... python api/auth/sync/get_test_token.py` locally.",
+      "item": [
+        {
+          "name": "Create Transaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('todayDate', new Date().toISOString().split('T')[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set('transactionId', data.transactionId);",
+                  "pm.collectionVariables.set('transactionDate', data.date);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "options": { "raw": { "language": "json" } },
+              "raw": "{\n  \"title\": \"Groceries\",\n  \"amount\": \"45.90\",\n  \"categories\": [\"food\", \"household\"],\n  \"date\": \"{{todayDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"]
+            },
+            "description": "201 on success (full Transaction object, owner is whoever authToken belongs to). 400 with {\"message\": \"Invalid transaction: ...\"} on missing/invalid fields. 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        },
+        {
+          "name": "List Transactions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"]
+            },
+            "description": "200 with {\"transactions\": [...]} for whoever authToken belongs to, newest first. 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Transaction",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "options": { "raw": { "language": "json" } },
+              "raw": "{\n  \"title\": \"Groceries (updated)\",\n  \"amount\": \"50.00\",\n  \"categories\": [\"food\"],\n  \"date\": \"{{transactionDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"transactionId\": \"{{transactionId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"]
+            },
+            "description": "Full replace — run 'Create Transaction' first so {{transactionId}}/{{transactionDate}} are populated. 200 with the updated Transaction. 400 if transactionId is missing/invalid. 404 if no matching item exists for this token's owner. 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Transaction",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?transactionId={{transactionId}}&date={{transactionDate}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [
+                { "key": "transactionId", "value": "{{transactionId}}" },
+                { "key": "date", "value": "{{transactionDate}}" }
+              ]
+            },
+            "description": "Run 'Create Transaction' first so the query params are populated. 200 with {\"message\": \"Transaction deleted\"}. 400 if any param is missing. 404 if no matching item exists for this token's owner. 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Subscriptions",
+      "description": "Protected by CognitoAuthorizer. Inherits the collection-level Bearer auth ({{authToken}}, from the environment) — same token works here as for Transactions.",
+      "item": [
+        {
+          "name": "Create Subscription",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set('subscriptionId', data.subscriptionId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "options": { "raw": { "language": "json" } },
+              "raw": "{\n  \"title\": \"Netflix\",\n  \"billingDay\": 20,\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"status\": \"active\",\n  \"amount\": \"9990\",\n  \"categories\": [\"subscriptions\", \"entertainment\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["subscriptions"]
+            },
+            "description": "201 on success (full Subscription object, owner is whoever authToken belongs to). 400 with {\"message\": \"Invalid subscription: ...\"} on missing/invalid fields. Omit \"amount\" entirely for a variable-amount subscription (e.g. an electricity bill). 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        },
+        {
+          "name": "List Subscriptions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["subscriptions"]
+            },
+            "description": "200 with {\"subscriptions\": [...]} for whoever authToken belongs to, newest first (sorted by createdAt). 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Subscription",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "options": { "raw": { "language": "json" } },
+              "raw": "{\n  \"title\": \"Netflix (updated)\",\n  \"billingDay\": 22,\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"status\": \"disabled\",\n  \"amount\": \"10990\",\n  \"subscriptionId\": \"{{subscriptionId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/subscriptions",
+              "host": ["{{baseUrl}}"],
+              "path": ["subscriptions"]
+            },
+            "description": "Full replace — run 'Create Subscription' first so {{subscriptionId}} is populated. 200 with the updated Subscription. 400 if subscriptionId is missing/invalid. 404 if no matching item exists for this token's owner. 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Subscription",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/subscriptions?subscriptionId={{subscriptionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["subscriptions"],
+              "query": [{ "key": "subscriptionId", "value": "{{subscriptionId}}" }]
+            },
+            "description": "Run 'Create Subscription' first so the query param is populated. 200 with {\"message\": \"Subscription deleted\"}. 400 if the param is missing. 404 if no matching item exists for this token's owner. 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

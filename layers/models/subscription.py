@@ -38,6 +38,10 @@ class Subscription(msgspec.Struct):
         # msgspec.Meta doesn't support numeric bounds on Decimal, so check here instead.
         if self.amount is not None and self.amount <= 0:
             raise ValueError("amount must be greater than 0 when provided")
+        # Subscriptions carry no accounts, so the Transaction they generate
+        # could never satisfy a transfer's accountId/targetAccountId rule.
+        if self.type == TransactionType.TRANSFER:
+            raise ValueError("type transfer is not supported for subscriptions")
 
 
 # ---------- (De)serialization ----------

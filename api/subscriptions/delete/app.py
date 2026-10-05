@@ -1,14 +1,15 @@
 # app.py
-"""DELETE /subscriptions?email=...&subscriptionId=...
+"""DELETE /subscriptions?subscriptionId=...
 
-Deletes a subscription. Unprotected for now: the caller passes the
-identifying fields as query string parameters (no auth/session yet).
+Deletes a subscription. Protected by the Cognito Lambda Authorizer — `email`
+comes from the verified token (requestContext.authorizer.email), not the
+query string, so a caller can only ever delete their own subscriptions.
 """
 import traceback
 
 from botocore.exceptions import ClientError
 
-from http_utils import json_response
+from http_utils import get_authenticated_email, json_response
 from subscription import get_subscriptions_table
 
 
@@ -23,13 +24,12 @@ def lambda_handler(event, context):
 
 
 def _handle(event):
+    email = get_authenticated_email(event)
+
     params = event.get("queryStringParameters") or {}
-    email = params.get("email")
     subscription_id = params.get("subscriptionId")
-    if not email or not subscription_id:
-        return json_response(
-            400, {"message": "Missing required query parameters: email, subscriptionId"}
-        )
+    if not subscription_id:
+        return json_response(400, {"message": "Missing required query parameter: subscriptionId"})
 
     table = get_subscriptions_table()
     try:
@@ -72,8 +72,9 @@ if __name__ == "__main__":
     )
     put_subscription(table, seed)
 
-    result = lambda_handler(
-        {"queryStringParameters": {"email": TEST_EMAIL, "subscriptionId": seed.subscriptionId}},
-        None,
-    )
+    event = {
+        "queryStringParameters": {"subscriptionId": seed.subscriptionId},
+        "requestContext": {"authorizer": {"email": TEST_EMAIL}},
+    }
+    result = lambda_handler(event, None)
     print(result)

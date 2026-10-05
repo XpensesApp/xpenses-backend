@@ -1,17 +1,20 @@
 # app.py
 """PUT /subscriptions
 
-Updates an existing subscription (full replace). Unprotected for now: the
-caller supplies `email` and the original `subscriptionId` in the body to
-identify the record, plus every field (existing values included) since this
-replaces the item rather than patching individual attributes.
+Updates an existing subscription (full replace). Protected by the Cognito
+Lambda Authorizer — `email` comes from the verified token
+(requestContext.authorizer.email), not the body, so a caller can only ever
+edit their own subscriptions. The body must still include the original
+`subscriptionId` to identify the record, plus every field (existing values
+included) since this replaces the item rather than patching individual
+attributes.
 """
 import json
 import traceback
 
 import msgspec
 
-from http_utils import json_response
+from http_utils import get_authenticated_email, json_response
 from subscription import get_subscriptions_table, parse_subscription, put_subscription
 
 
@@ -35,6 +38,8 @@ def _handle(event):
         return json_response(
             400, {"message": "subscriptionId is required to identify the subscription to edit"}
         )
+
+    body["email"] = get_authenticated_email(event)
 
     try:
         subscription = parse_subscription(body)
@@ -81,7 +86,7 @@ if __name__ == "__main__":
 
     body = json.dumps(
         {
-            "email": TEST_EMAIL,
+            "email": TEST_EMAIL,  # overwritten by the (simulated) authorizer context below anyway
             "title": "Edited via local test",
             "billingDay": 12,
             "type": TransactionType.EXPENSE.value,
@@ -90,5 +95,6 @@ if __name__ == "__main__":
             "subscriptionId": seed.subscriptionId,
         }
     )
-    result = lambda_handler({"body": body}, None)
+    event = {"body": body, "requestContext": {"authorizer": {"email": TEST_EMAIL}}}
+    result = lambda_handler(event, None)
     print(result)

@@ -19,12 +19,15 @@ Serverless expense tracker backend: AWS Lambda + DynamoDB + API Gateway, Python,
 | `amount` | Decimal | magnitude only; sign comes from `type` |
 | `categories` | list[str] | free-form tags, no separate entity |
 | `date` | date | |
-| `type` | `TransactionType` enum | `EXPENSE` / `INCOME` |
+| `type` | `TransactionType` enum | `EXPENSE` / `INCOME` / `TRANSFER` |
 | `affectsBalance` | bool | |
 | `pending` | bool | |
 | `transactionId` | str | auto (uuid4), part of the sort key |
 | `sk` | str | table SK, auto-derived as `"<date>#<transactionId>"` |
 | `accountId`, `installments`, `paymentDay`, `subscriptionId`, `billingPeriod` | optional | |
+| `targetAccountId` | str? | destination account; required iff `type` is `TRANSFER` |
+
+**Transfers:** a single `TRANSFER` transaction moves `amount` from `accountId` to `targetAccountId` (both required, must differ) instead of recording an expense + an income. It's an outflow for `accountId`, an inflow for `targetAccountId`, and nets to zero on the user's overall balance. `targetAccountId` is rejected on non-transfer types.
 
 **Table key schema:** PK = `email`, SK = `sk`. A single `Query` on `email` returns all of a user's transactions, naturally sortable/filterable by date since `sk` is date-prefixed — no GSI needed for the main use case.
 
@@ -34,7 +37,7 @@ Serverless expense tracker backend: AWS Lambda + DynamoDB + API Gateway, Python,
 | `email` | str | owner (table PK), matches `User.email` |
 | `title` | str | non-empty |
 | `billingDay` | int (1-31) | day of month a pending `Transaction` is generated |
-| `type` | `TransactionType` enum | reused from `transaction.py` — a salary is an income subscription |
+| `type` | `TransactionType` enum | reused from `transaction.py` — a salary is an income subscription; `TRANSFER` is rejected (subscriptions have no accounts) |
 | `affectsBalance` | bool | |
 | `status` | `SubscriptionStatus` enum | `ACTIVE` / `DISABLED` |
 | `subscriptionId` | str | auto (uuid4), table SK |
@@ -51,11 +54,27 @@ Serverless expense tracker backend: AWS Lambda + DynamoDB + API Gateway, Python,
 
 **`POST /auth/sync`** — verifies a Cognito ID token (Bearer header) against the pool's JWKS, then looks up the user by email in the Users table and creates it if it doesn't exist yet.
 
-**Transactions CRUD** (`api/transactions/{add,get,edit,delete}`) and **Subscriptions CRUD** (`api/subscriptions/{add,get,edit,delete}`) — both unprotected for now (no auth), open CORS (`*`) on every route:
-- `POST /transactions` / `POST /subscriptions` — create
-- `GET /transactions?email=` / `GET /subscriptions?email=` — list a user's records, newest first
-- `PUT /transactions` (needs original `transactionId` + `date`) / `PUT /subscriptions` (needs original `subscriptionId`) — full-replace update
-- `DELETE /transactions?email=&transactionId=&date=` / `DELETE /subscriptions?email=&subscriptionId=` — delete
+**Transactions CRUD** (`api/transactions/{add,get,edit,delete}`) — **protected** by `CognitoAuthorizer` (see below). `email` comes from the verified token, not the request — dropped from the contract entirely:
+- `POST /transactions` — create
+- `GET /transactions` — list the caller's own records, newest first
+- `PUT /transactions` (needs original `transactionId` + `date`) — full-replace update
+- `DELETE /transactions?transactionId=&date=` — delete
+
+**Subscriptions CRUD** (`api/subscriptions/{add,get,edit,delete}`) — **protected** by `CognitoAuthorizer` too, same rule as Transactions:
+- `POST /subscriptions` — create
+- `GET /subscriptions` — list the caller's own records, newest first
+- `PUT /subscriptions` (needs original `subscriptionId`) — full-replace update
+- `DELETE /subscriptions?subscriptionId=` — delete
+
+Open CORS (`*`) on every route.
+
+## Cognito Lambda Authorizer
+
+`api/auth/authorizer/app.py` (`CognitoAuthorizerFunction`) is a `TOKEN`-type REST API authorizer, wired onto every Transactions and Subscriptions route (`XpensesApi`'s `Auth.Authorizers.CognitoAuthorizer` — no `DefaultAuthorizer`, so `/auth/sync` stays on its own inline check unless a route opts in via `Events.*.Properties.Auth.Authorizer`).
+
+It reuses the exact same verification `auth/sync` does inline (`cognito_auth.py` in the shared layer — extracted from `auth/sync/app.py` specifically so this wouldn't be a third copy). On success it returns an Allow policy plus `context: {email}`, which lands on the downstream Lambda's event at `requestContext.authorizer.email` (read via `http_utils.get_authenticated_email(event)`). On failure it raises the exact string `"Unauthorized"` — the API Gateway TOKEN-authorizer contract that produces a 401 (any other exception message/type produces a 500 instead). That 401's body is customized via `GatewayResponseDefault4xx` in `template.yaml`, **not** a dedicated `GatewayResponseUnauthorized` (`ResponseType: UNAUTHORIZED`) — confirmed empirically that `UNAUTHORIZED` genuinely never applies to this failure mode, while `DEFAULT_4XX` does (an earlier test on `DEFAULT_4XX` gave a false negative from testing only seconds after patching, before the change had propagated). Safe to put an auth-specific message on that catch-all since our own Lambda-level 400/404 responses never go through `GatewayResponse` at all. The real per-request reason (expired, bad signature, wrong issuer, ...) still only goes to CloudWatch (`auth-authorizer-{stage}`), never the client — genuinely dynamic per-request messages aren't achievable here regardless, short of migrating the REST API to an HTTP API (v2). `Identity.ReauthorizeEvery: 300` caches a decision for 5 minutes per token; the returned policy's `Resource` is wildcarded to the whole API stage so that cache applies across routes, not just whichever one triggered the check.
+
+**Ownership, not just authentication:** a valid token alone isn't what makes these routes safe — every handler calls `http_utils.get_authenticated_email(event)` and uses *that* (never a client-supplied value) as the DynamoDB partition key for every read/write. `edit`/`delete` build their lookup key from the token's email plus the client-supplied resource id, so trying to edit/delete someone else's `transactionId`/`subscriptionId` just misses (`404`, not their data) — there's no separate "does this belong to you?" check, ownership is enforced by construction: the key can only ever resolve to your own partition.
 
 ## Daily Billing Job
 
@@ -74,7 +93,7 @@ Needs `COGNITO_APP_CLIENT_SECRET` and `TEST_USER_PASSWORD` in `.env` (the app cl
 
 ## Shared Lambda Layer
 
-`layers/models/` (`transaction.py`, `subscription.py`, `http_utils.py`) is a real Lambda Layer (`ModelsLayer` in `template.yaml`), attached to each transactions/subscriptions function via `Layers:`. `sam build` nests it under `python/` automatically so it lands on `/opt/python` at runtime.
+`layers/models/` (`transaction.py`, `subscription.py`, `http_utils.py`, `cognito_auth.py`) is a real Lambda Layer (`ModelsLayer` in `template.yaml`), attached to each transactions/subscriptions function via `Layers:`. `sam build` nests it under `python/` automatically so it lands on `/opt/python` at runtime.
 
 Locally, that folder isn't on `sys.path` by default, so running any Lambda's `if __name__ == "__main__"` block directly needs `PYTHONPATH` pointed at it:
 
@@ -88,4 +107,4 @@ PowerShell:
 $env:PYTHONPATH = "..\..\..\layers\models"; python app.py
 ```
 
-Each `__main__` block runs against a fixed test user (`jane@test`) and your real `.env` (`USERS_TABLE`, `TRANSACTIONS_TABLE`, `SUBSCRIPTIONS_TABLE`, `COGNITO_*`), loaded via `python-dotenv`.
+Each `__main__` block runs against a fixed test user (`jane@test`) and your real `.env` (`USERS_TABLE`, `TRANSACTIONS_TABLE`, `SUBSCRIPTIONS_TABLE`, `COGNITO_*`), loaded via `python-dotenv`. For the (now-protected) Transactions Lambdas, the `__main__` block simulates the authorizer's output directly (`event["requestContext"]["authorizer"]["email"]`) rather than needing a real token — use `api/auth/sync/get_test_token.py` when you need to exercise the real deployed/protected route end-to-end instead.

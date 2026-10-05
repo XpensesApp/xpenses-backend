@@ -13,6 +13,7 @@ import msgspec
 class TransactionType(str, enum.Enum):
     EXPENSE = "expense"
     INCOME = "income"
+    TRANSFER = "transfer"  # moves money accountId -> targetAccountId; nets to zero overall
 
 
 class Transaction(msgspec.Struct):
@@ -29,7 +30,8 @@ class Transaction(msgspec.Struct):
     # Defaulted / optional
     transactionId: str = msgspec.field(default_factory=lambda: uuid.uuid4().hex)
     sk: str = ""  # DynamoDB sort key; computed in __post_init__ if not already set
-    accountId: Optional[str] = None
+    accountId: Optional[str] = None  # source account for a transfer
+    targetAccountId: Optional[str] = None  # destination account; only set (and required) for transfers
     installments: Optional[Annotated[int, msgspec.Meta(ge=1)]] = None
     paymentDay: Optional[Annotated[int, msgspec.Meta(ge=1, le=31)]] = None
     subscriptionId: Optional[str] = None
@@ -45,6 +47,17 @@ class Transaction(msgspec.Struct):
                 raise ValueError("amount must be >= 0 when pending is true")
         elif self.amount <= 0:
             raise ValueError("amount must be greater than 0")
+
+        # A transfer is a single movement between two of the user's accounts
+        # (instead of an expense on one + an income on the other), so it needs
+        # both ends; targetAccountId is meaningless on any other type.
+        if self.type == TransactionType.TRANSFER:
+            if not self.accountId or not self.targetAccountId:
+                raise ValueError("accountId and targetAccountId are required when type is transfer")
+            if self.accountId == self.targetAccountId:
+                raise ValueError("targetAccountId must be different from accountId")
+        elif self.targetAccountId is not None:
+            raise ValueError("targetAccountId is only allowed when type is transfer")
 
         # Only derive sk on fresh creation; preserve it as-is when rehydrating
         # an item that already has one (e.g. read back from DynamoDB).

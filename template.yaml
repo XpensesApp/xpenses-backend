@@ -64,10 +64,33 @@ Resources:
         AllowOrigin: "'*'"
         AllowHeaders: "'*'"
         AllowMethods: "'*'"
+      Auth:
+        # No DefaultAuthorizer — most routes stay unprotected for now; this
+        # authorizer is only attached explicitly to the routes that need it
+        # (see each Function's Events.*.Properties.Auth.Authorizer below).
+        Authorizers:
+          CognitoAuthorizer:
+            FunctionArn: !GetAtt CognitoAuthorizerFunction.Arn
+            FunctionPayloadType: TOKEN
+            Identity:
+              Header: Authorization
+              ValidationExpression: "^Bearer .+$"
+              ReauthorizeEvery: 300 # cache a valid decision for 5 minutes per token
 
   #########################################
   # Gateway Responses (CORS on API Gateway-level errors)
   #########################################
+  # This is what actually fires for CognitoAuthorizerFunction's 401 (raising
+  # Exception("Unauthorized")) — NOT a dedicated GatewayResponseUnauthorized
+  # (ResponseType: UNAUTHORIZED). Confirmed empirically: UNAUTHORIZED never
+  # applies to this failure mode (patched it with a debug marker + zero
+  # wait, never appeared); DEFAULT_4XX does apply, it just needs a few
+  # seconds to propagate after a deploy before it's visible — an earlier
+  # test on DEFAULT_4XX gave a false negative from testing too soon after
+  # patching. Safe to put an auth-specific message on the DEFAULT_4XX
+  # catch-all here since our own Lambda-level 400/404 responses never go
+  # through GatewayResponse at all — those are ordinary successful Lambda
+  # executions that just happen to return a 4xx-flavored body.
   GatewayResponseDefault4xx:
     Type: AWS::ApiGateway::GatewayResponse
     Properties:
@@ -76,6 +99,11 @@ Resources:
       ResponseParameters:
         gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
         gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      ResponseTemplates:
+        application/json: !Sub |
+          {
+            "message": "Missing, invalid, or expired authentication token, or a malformed request. Check CloudWatch logs for auth-authorizer-${StageName} for the specific reason if this was an auth failure."
+          }
 
   GatewayResponseDefault5xx:
     Type: AWS::ApiGateway::GatewayResponse
@@ -87,6 +115,34 @@ Resources:
         gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
 
   #########################################
+  # Lambda: Cognito Authorizer (shared by any protected route)
+  #########################################
+  CognitoAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub auth-authorizer-${StageName}
+      CodeUri: api/auth/authorizer/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          COGNITO_USER_POOL_ID: !FindInMap
+            - CognitoConfig
+            - !Ref StageName
+            - UserPoolId
+
+          COGNITO_APP_CLIENT_ID: !FindInMap
+            - CognitoConfig
+            - !Ref StageName
+            - AppClientId
+
+          COGNITO_REGION: !FindInMap
+            - CognitoConfig
+            - !Ref StageName
+            - Region
+
+  #########################################
   # Lambda: Auth Sync
   #########################################
   AuthSyncFunction:
@@ -95,6 +151,8 @@ Resources:
       FunctionName: !Sub auth-sync-${StageName}
       CodeUri: api/auth/sync/
       Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
 
       Environment:
         Variables:
@@ -141,7 +199,7 @@ Resources:
             Method: POST
 
   #########################################
-  # Lambda: Transactions CRUD (unprotected for now)
+  # Lambda: Transactions CRUD (protected by CognitoAuthorizer)
   #########################################
   AddTransactionFunction:
     Type: AWS::Serverless::Function
@@ -176,6 +234,8 @@ Resources:
             RestApiId: !Ref XpensesApi
             Path: /transactions
             Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   GetTransactionsFunction:
     Type: AWS::Serverless::Function
@@ -210,6 +270,8 @@ Resources:
             RestApiId: !Ref XpensesApi
             Path: /transactions
             Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   EditTransactionFunction:
     Type: AWS::Serverless::Function
@@ -245,6 +307,8 @@ Resources:
             RestApiId: !Ref XpensesApi
             Path: /transactions
             Method: PUT
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   DeleteTransactionFunction:
     Type: AWS::Serverless::Function
@@ -279,9 +343,11 @@ Resources:
             RestApiId: !Ref XpensesApi
             Path: /transactions
             Method: DELETE
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   #########################################
-  # Lambda: Subscriptions CRUD (unprotected for now)
+  # Lambda: Subscriptions CRUD (protected by CognitoAuthorizer)
   #########################################
   AddSubscriptionFunction:
     Type: AWS::Serverless::Function
@@ -316,6 +382,8 @@ Resources:
             RestApiId: !Ref XpensesApi
             Path: /subscriptions
             Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   GetSubscriptionsFunction:
     Type: AWS::Serverless::Function
@@ -350,6 +418,8 @@ Resources:
             RestApiId: !Ref XpensesApi
             Path: /subscriptions
             Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   EditSubscriptionFunction:
     Type: AWS::Serverless::Function
@@ -385,6 +455,8 @@ Resources:
             RestApiId: !Ref XpensesApi
             Path: /subscriptions
             Method: PUT
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   DeleteSubscriptionFunction:
     Type: AWS::Serverless::Function
@@ -419,6 +491,8 @@ Resources:
             RestApiId: !Ref XpensesApi
             Path: /subscriptions
             Method: DELETE
+            Auth:
+              Authorizer: CognitoAuthorizer
 
   #########################################
   # Lambda: Daily Billing (subscriptions -> pending transactions)

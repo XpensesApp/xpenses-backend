@@ -1,14 +1,15 @@
 # app.py
-"""DELETE /transactions?email=...&transactionId=...&date=...
+"""DELETE /transactions?transactionId=...&date=...
 
-Deletes a transaction. Unprotected for now: the caller passes the
-identifying fields as query string parameters (no auth/session yet).
+Deletes a transaction. Protected by the Cognito Lambda Authorizer — `email`
+comes from the verified token (requestContext.authorizer.email), not the
+query string, so a caller can only ever delete their own transactions.
 """
 import traceback
 
 from botocore.exceptions import ClientError
 
-from http_utils import json_response
+from http_utils import get_authenticated_email, json_response
 from transaction import build_sk, get_transactions_table
 
 
@@ -23,13 +24,14 @@ def lambda_handler(event, context):
 
 
 def _handle(event):
+    email = get_authenticated_email(event)
+
     params = event.get("queryStringParameters") or {}
-    email = params.get("email")
     transaction_id = params.get("transactionId")
     date = params.get("date")
-    if not email or not transaction_id or not date:
+    if not transaction_id or not date:
         return json_response(
-            400, {"message": "Missing required query parameters: email, transactionId, date"}
+            400, {"message": "Missing required query parameters: transactionId, date"}
         )
 
     table = get_transactions_table()
@@ -76,14 +78,12 @@ if __name__ == "__main__":
     )
     put_transaction(table, seed)
 
-    result = lambda_handler(
-        {
-            "queryStringParameters": {
-                "email": TEST_EMAIL,
-                "transactionId": seed.transactionId,
-                "date": seed.date.isoformat(),
-            }
+    event = {
+        "queryStringParameters": {
+            "transactionId": seed.transactionId,
+            "date": seed.date.isoformat(),
         },
-        None,
-    )
+        "requestContext": {"authorizer": {"email": TEST_EMAIL}},
+    }
+    result = lambda_handler(event, None)
     print(result)

@@ -1,14 +1,15 @@
 # app.py
-"""GET /subscriptions?email=...
+"""GET /subscriptions
 
-Lists all subscriptions for a user, newest first. Unprotected for now: the
-caller passes `email` as a query string parameter (no auth/session yet).
+Lists all subscriptions for the authenticated user, newest first. Protected
+by the Cognito Lambda Authorizer — `email` comes from the verified token
+(requestContext.authorizer.email), no query parameter needed anymore.
 """
 import traceback
 
 from boto3.dynamodb.conditions import Key
 
-from http_utils import json_response
+from http_utils import get_authenticated_email, json_response
 from subscription import get_subscriptions_table
 
 
@@ -23,10 +24,7 @@ def lambda_handler(event, context):
 
 
 def _handle(event):
-    params = event.get("queryStringParameters") or {}
-    email = params.get("email")
-    if not email:
-        return json_response(400, {"message": "Missing required query parameter: email"})
+    email = get_authenticated_email(event)
 
     table = get_subscriptions_table()
     result = table.query(KeyConditionExpression=Key("email").eq(email))
@@ -48,5 +46,6 @@ if __name__ == "__main__":
 
     TEST_EMAIL = "jane@test"
 
-    result = lambda_handler({"queryStringParameters": {"email": TEST_EMAIL}}, None)
+    event = {"requestContext": {"authorizer": {"email": TEST_EMAIL}}}
+    result = lambda_handler(event, None)
     print(result)

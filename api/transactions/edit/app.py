@@ -1,17 +1,20 @@
 # app.py
 """PUT /transactions
 
-Updates an existing transaction (full replace). Unprotected for now: the
-caller supplies `email` and the original `transactionId`/`date` in the body
-to identify the record, plus every field (existing values included) since
-this replaces the item rather than patching individual attributes.
+Updates an existing transaction (full replace). Protected by the Cognito
+Lambda Authorizer — `email` comes from the verified token
+(requestContext.authorizer.email), not the body, so a caller can only ever
+edit their own transactions. The body must still include the original
+`transactionId`/`date` to identify the record, plus every field (existing
+values included) since this replaces the item rather than patching
+individual attributes.
 """
 import json
 import traceback
 
 import msgspec
 
-from http_utils import json_response
+from http_utils import get_authenticated_email, json_response
 from transaction import get_transactions_table, parse_transaction, put_transaction
 
 
@@ -35,6 +38,8 @@ def _handle(event):
         return json_response(
             400, {"message": "transactionId is required to identify the transaction to edit"}
         )
+
+    body["email"] = get_authenticated_email(event)
 
     try:
         transaction = parse_transaction(body)
@@ -82,7 +87,7 @@ if __name__ == "__main__":
 
     body = json.dumps(
         {
-            "email": TEST_EMAIL,
+            "email": TEST_EMAIL,  # overwritten by the (simulated) authorizer context below anyway
             "title": "Edited via local test",
             "amount": "7.25",
             "categories": ["testing", "edited"],
@@ -93,5 +98,6 @@ if __name__ == "__main__":
             "transactionId": seed.transactionId,
         }
     )
-    result = lambda_handler({"body": body}, None)
+    event = {"body": body, "requestContext": {"authorizer": {"email": TEST_EMAIL}}}
+    result = lambda_handler(event, None)
     print(result)

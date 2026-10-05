@@ -66,7 +66,7 @@ def ensure_test_user(email: str, password: str) -> None:
         UserPoolId=USER_POOL_ID, Username=email, Password=password, Permanent=True
     )
 
-f
+
 def get_id_token(email: str, password: str) -> str:
     """Log in as the test user via Cognito's choice-based USER_AUTH flow and
     return a real ID token — the same shape auth/sync's verify_token() expects.
