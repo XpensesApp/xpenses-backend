@@ -6,23 +6,26 @@ ACTIVE subscription whose billingDay matches today's day-of-month into a
 pending Transaction, skipping subscriptions that have already expired
 (endDate in the past).
 
-Idempotent: rerunning for the same day overwrites rather than duplicates,
-since generate_transaction_from_subscription builds a deterministic
-transactionId (subscriptionId + date) — safe to retry the whole job (e.g.
-after a partial failure) or manually re-invoke for a past date to backfill.
+Idempotent: generate_transaction_from_subscription builds a deterministic
+transactionId (subscriptionId + date), and the insert is conditional, so a
+transaction that already exists for that subscription/date is skipped (counted
+as alreadyBilled) rather than duplicated or overwritten. Overwriting would
+clobber a bill the user has since settled (amount, pending=false, accountId)
+and desync its account balance. Safe to retry the whole job (e.g. after a
+partial failure) or manually re-invoke for a past date to backfill.
 """
 import traceback
 from datetime import date
 
 from boto3.dynamodb.conditions import Key
 
+from account import TransactionConflict, create_transaction
 from subscription import (
     SubscriptionStatus,
     generate_transaction_from_subscription,
     get_subscriptions_table,
     parse_subscription_item,
 )
-from transaction import get_transactions_table, put_transaction
 
 
 def lambda_handler(event, context):
@@ -32,9 +35,9 @@ def lambda_handler(event, context):
     today = date.fromisoformat(event["date"]) if event and event.get("date") else date.today()
 
     sub_table = get_subscriptions_table()
-    txn_table = get_transactions_table()
 
     created = 0
+    already_billed = 0
     skipped_expired = 0
     failed = 0
 
@@ -61,7 +64,11 @@ def lambda_handler(event, context):
                     continue
 
                 transaction = generate_transaction_from_subscription(subscription, today)
-                put_transaction(txn_table, transaction)
+                try:
+                    create_transaction(transaction)
+                except TransactionConflict:
+                    already_billed += 1
+                    continue
                 created += 1
             except Exception:
                 # One bad/malformed subscription shouldn't block the rest of the run.
@@ -73,7 +80,13 @@ def lambda_handler(event, context):
         if not exclusive_start_key:
             break
 
-    summary = {"date": today.isoformat(), "created": created, "skippedExpired": skipped_expired, "failed": failed}
+    summary = {
+        "date": today.isoformat(),
+        "created": created,
+        "alreadyBilled": already_billed,
+        "skippedExpired": skipped_expired,
+        "failed": failed,
+    }
     print(summary)
     return summary
 

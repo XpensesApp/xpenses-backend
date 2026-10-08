@@ -3,11 +3,16 @@
 
 Verifies a Cognito ID token sent as a Bearer token, then looks up the
 corresponding user in the Users table and creates it if it doesn't exist yet.
+
+Also makes sure the user has their default account (see account.py), on
+every sync rather than only when the user is created, so users that existed
+before accounts did get one on their next login.
 """
 import json
 import traceback
 from typing import Any
 
+from account import ensure_default_account, get_accounts_table
 from cognito_auth import AuthError, extract_bearer_token, verify_token
 
 from models import User, get_users_table, put_user
@@ -60,6 +65,10 @@ def _handle(event):
     email = claims.get("email")
     if not email:
         return _response(401, {"message": "Token does not contain an email claim"})
+
+    # Idempotent; done before the user lookup so a crash in between is
+    # repaired by the next sync instead of leaving a user without one.
+    ensure_default_account(get_accounts_table(), email)
 
     table = get_users_table()
     existing = table.get_item(Key={"email": email}).get("Item")

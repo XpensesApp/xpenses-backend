@@ -82,9 +82,9 @@ if __name__ == "__main__":
     except ImportError:
         pass
 
-    # Load ../sync/get_test_token.py by path (not by module name) since both
-    # directories have their own app.py and a plain `import` would collide.
-    sync_dir = os.path.join(os.path.dirname(__file__), "..", "sync")
+    # Load api/auth/sync/get_test_token.py by path (not by module name) since
+    # both directories have their own app.py and a plain `import` would collide.
+    sync_dir = os.path.join(os.path.dirname(__file__), "..", "api", "auth", "sync")
     spec = importlib.util.spec_from_file_location(
         "get_test_token", os.path.join(sync_dir, "get_test_token.py")
     )

@@ -23,10 +23,12 @@ Mappings:
       UsersTableName: xpenses-users-table-prod
       TransactionsTableName: xpenses-transactions-table-prod
       SubscriptionsTableName: xpenses-suscriptions-table-prod
+      AccountsTableName: xpenses-accounts-table-prod
     prod:
       UsersTableName: xpenses-users-table-prod
       TransactionsTableName: xpenses-transactions-table-prod
       SubscriptionsTableName: xpenses-suscriptions-table-prod
+      AccountsTableName: xpenses-accounts-table-prod
 
   CognitoConfig:
     dev:
@@ -121,7 +123,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub auth-authorizer-${StageName}
-      CodeUri: api/auth/authorizer/
+      CodeUri: authorizer/
       Handler: app.lambda_handler
       Layers:
         - !Ref ModelsLayer
@@ -161,6 +163,11 @@ Resources:
             - !Ref StageName
             - UsersTableName
 
+          ACCOUNTS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - AccountsTableName
+
           COGNITO_USER_POOL_ID: !FindInMap
             - CognitoConfig
             - !Ref StageName
@@ -189,6 +196,17 @@ Resources:
                       - TableNames
                       - !Ref StageName
                       - UsersTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
+                  - AccountsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - AccountsTableName
 
       Events:
         AuthSync:
@@ -215,11 +233,18 @@ Resources:
             - TableNames
             - !Ref StageName
             - TransactionsTableName
+          ACCOUNTS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - AccountsTableName
       Policies:
         - Statement:
             - Effect: Allow
               Action:
+                - dynamodb:GetItem
+                - dynamodb:Query # card statement recalculation reads the history
                 - dynamodb:PutItem
+                - dynamodb:DeleteItem
               Resource:
                 - !Sub
                   - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TransactionsTable}
@@ -227,6 +252,19 @@ Resources:
                       - TableNames
                       - !Ref StageName
                       - TransactionsTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query # which touched accounts are credit cards
+                - dynamodb:UpdateItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
+                  - AccountsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - AccountsTableName
       Events:
         AddTransaction:
           Type: Api
@@ -287,12 +325,18 @@ Resources:
             - TableNames
             - !Ref StageName
             - TransactionsTableName
+          ACCOUNTS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - AccountsTableName
       Policies:
         - Statement:
             - Effect: Allow
               Action:
                 - dynamodb:GetItem
+                - dynamodb:Query # card statement recalculation reads the history
                 - dynamodb:PutItem
+                - dynamodb:DeleteItem
               Resource:
                 - !Sub
                   - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TransactionsTable}
@@ -300,6 +344,19 @@ Resources:
                       - TableNames
                       - !Ref StageName
                       - TransactionsTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query # which touched accounts are credit cards
+                - dynamodb:UpdateItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
+                  - AccountsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - AccountsTableName
       Events:
         EditTransaction:
           Type: Api
@@ -324,10 +381,17 @@ Resources:
             - TableNames
             - !Ref StageName
             - TransactionsTableName
+          ACCOUNTS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - AccountsTableName
       Policies:
         - Statement:
             - Effect: Allow
               Action:
+                - dynamodb:GetItem
+                - dynamodb:Query # card statement recalculation reads the history
+                - dynamodb:PutItem
                 - dynamodb:DeleteItem
               Resource:
                 - !Sub
@@ -336,12 +400,174 @@ Resources:
                       - TableNames
                       - !Ref StageName
                       - TransactionsTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query # which touched accounts are credit cards
+                - dynamodb:UpdateItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
+                  - AccountsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - AccountsTableName
       Events:
         DeleteTransaction:
           Type: Api
           Properties:
             RestApiId: !Ref XpensesApi
             Path: /transactions
+            Method: DELETE
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  #########################################
+  # Lambda: Accounts CRUD (protected by CognitoAuthorizer)
+  #########################################
+  AddAccountFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub accounts-add-${StageName}
+      CodeUri: api/accounts/add/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - AccountsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
+                  - AccountsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - AccountsTableName
+      Events:
+        AddAccount:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /accounts
+            Method: POST
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  GetAccountsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub accounts-get-${StageName}
+      CodeUri: api/accounts/get/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - AccountsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
+                  - AccountsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - AccountsTableName
+      Events:
+        GetAccounts:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /accounts
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  EditAccountFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub accounts-edit-${StageName}
+      CodeUri: api/accounts/edit/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - AccountsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
+                  - AccountsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - AccountsTableName
+      Events:
+        EditAccount:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /accounts
+            Method: PUT
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  DeleteAccountFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub accounts-delete-${StageName}
+      CodeUri: api/accounts/delete/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - AccountsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:DeleteItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
+                  - AccountsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - AccountsTableName
+      Events:
+        DeleteAccount:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /accounts
             Method: DELETE
             Auth:
               Authorizer: CognitoAuthorizer
@@ -501,7 +727,7 @@ Resources:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: !Sub billing-daily-${StageName}
-      CodeUri: api/billing/daily/
+      CodeUri: billing/
       Handler: app.lambda_handler
       Timeout: 300 # batch job, not request/response — more headroom than the API Globals default
       Layers:
@@ -516,6 +742,10 @@ Resources:
             - TableNames
             - !Ref StageName
             - TransactionsTableName
+          ACCOUNTS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - AccountsTableName
       Policies:
         - Statement:
             - Effect: Allow
@@ -539,6 +769,18 @@ Resources:
                       - TableNames
                       - !Ref StageName
                       - TransactionsTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
+                  - AccountsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - AccountsTableName
       Events:
         DailySchedule:
           Type: Schedule
@@ -547,6 +789,66 @@ Resources:
             Schedule: cron(0 6 * * ? *)
             Name: !Sub xpenses-daily-billing-${StageName}
             Description: Converts due subscriptions into pending transactions
+            Enabled: true
+
+  #########################################
+  # Lambda: Credit card statements (credit cards -> monthly pending transfers)
+  #########################################
+  CardStatementsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub card-statements-${StageName}
+      CodeUri: statements/
+      Handler: app.lambda_handler
+      Timeout: 300 # batch job, not request/response — more headroom than the API Globals default
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - AccountsTableName
+          TRANSACTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - TransactionsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan # find every credit account
+                - dynamodb:UpdateItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
+                  - AccountsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - AccountsTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem # rolling over an unpaid statement
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TransactionsTable}
+                  - TransactionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - TransactionsTableName
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            # 06:15 UTC daily (03:15 Chile), after the subscriptions job; order doesn't matter, they're independent.
+            Schedule: cron(15 6 * * ? *)
+            Name: !Sub xpenses-card-statements-${StageName}
+            Description: Generates each credit card's monthly pending statement transfer
             Enabled: true
 
 Outputs:

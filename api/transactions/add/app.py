@@ -5,14 +5,21 @@ Creates a new transaction. Protected by the Cognito Lambda Authorizer —
 `email` comes from the verified token (requestContext.authorizer.email), not
 from the request body, so a caller can only ever create transactions for
 themselves. Any "email" in the body is ignored/overwritten.
+
+The transaction and its effect on account balances (see account.py) are
+written atomically. `statement` is server-managed (only the card statements
+job creates statements), so it's dropped from the body. Afterwards, the
+pending statement of any credit card it touches is recalculated.
 """
 import json
 import traceback
 
 import msgspec
 
+from account import AccountNotFound, TransactionConflict, create_transaction
 from http_utils import get_authenticated_email, json_response
-from transaction import get_transactions_table, parse_transaction, put_transaction
+from statement import sync_cards_touched_by
+from transaction import parse_transaction, transaction_to_item
 
 
 def lambda_handler(event, context):
@@ -29,13 +36,21 @@ def _handle(event):
     try:
         body = json.loads(event.get("body") or "{}")
         body["email"] = get_authenticated_email(event)
+        body.pop("statement", None)
+        body.pop("sk", None)  # derived from date + transactionId
         transaction = parse_transaction(body)
     except (json.JSONDecodeError, msgspec.ValidationError) as exc:
         return json_response(400, {"message": f"Invalid transaction: {exc}"})
 
-    table = get_transactions_table()
-    put_transaction(table, transaction)
+    try:
+        create_transaction(transaction)
+    except TransactionConflict:
+        # Only possible if the client supplied a transactionId that's already taken
+        return json_response(409, {"message": "A transaction with this transactionId and date already exists"})
+    except AccountNotFound as exc:
+        return json_response(400, {"message": str(exc)})
 
+    sync_cards_touched_by(transaction.email, [transaction_to_item(transaction)])
     return json_response(201, msgspec.to_builtins(transaction))
 
 

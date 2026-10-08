@@ -119,8 +119,9 @@ def generate_transaction_from_subscription(subscription: Subscription, billing_d
     Shared by the (future) daily worker Lambda and local testing, so the
     conversion rule only lives in one place. The transactionId is deterministic
     (subscriptionId + date) rather than random: since Transaction.sk is
-    "date#transactionId", reprocessing the same subscription/date (e.g. an SQS
-    redelivery) overwrites the same item instead of creating a duplicate.
+    "date#transactionId", reprocessing the same subscription/date (e.g. a job
+    retry) targets the same item, which the job's conditional insert then
+    skips instead of creating a duplicate.
     """
     return Transaction(
         email=subscription.email,

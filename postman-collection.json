@@ -2,20 +2,436 @@
   "info": {
     "_postman_id": "b6f1a2e4-3c1e-4b8a-9d2a-3f7e2a6c9a11",
     "name": "Xpenses Backend",
-    "description": "Transactions and Subscriptions CRUD endpoints — both protected by a Cognito Lambda Authorizer. Neither takes `email` as input at all anymore — it's derived from the verified Bearer token, so every request needs Authorization: Bearer {{authToken}}. Get a token via `api/auth/sync/get_test_token.py` locally and paste it into the authToken environment variable (see the companion xpenses-backend.postman_environment.json — baseUrl/authToken live there, not in this collection). See transactions-endpoint-handoff.md / subscription_handoff.md in the repo for full field-by-field detail.\n\nEach folder is runnable top-to-bottom: Create sets the id/date it produces as a collection variable, which List/Update/Delete then reuse automatically.",
+    "description": "Auth sync plus Accounts, Transactions and Subscriptions CRUD endpoints. Every request needs Authorization: Bearer {{authToken}} (set once at collection level). None takes `email` as input; it's derived from the verified token.\n\nSetup: create a Postman environment with two variables, `baseUrl` (the stack's ApiUrl output, e.g. https://{api-id}.execute-api.us-east-1.amazonaws.com/prod) and `authToken` (a Cognito ID token; get one locally with `api/auth/sync/get_test_token.py`, valid for 60 minutes). See handoff.md for the latest changes, and transactions-endpoint-handoff.md / subscription_handoff.md for field-by-field detail.\n\nRun the folders in order (Auth → Accounts → Transactions → Subscriptions; the credit card flow is in Transactions, see handoff.md), each top-to-bottom: Create sets the id/date it produces as a collection variable, which List/Update/Delete then reuse automatically. Auth comes first because it creates the user's default account; Accounts comes before Transactions because transactions must reference an existing account, and use the {{accountId}} it creates.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "todayDate", "value": "", "type": "string" },
-    { "key": "transactionId", "value": "", "type": "string" },
-    { "key": "transactionDate", "value": "", "type": "string" },
-    { "key": "subscriptionId", "value": "", "type": "string" }
+    {
+      "key": "todayDate",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "transactionId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "transactionDate",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "listFrom",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "listTo",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "nextToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "subscriptionId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "accountId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "deleteAccountId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "cardAccountId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "statementTransactionId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "statementDate",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "statementAmount",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "cardPaymentDay",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "cardDueDate",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "backdatedDate",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "backdatedTransactionId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "statementRevision",
+      "value": "",
+      "type": "string"
+    }
   ],
   "auth": {
     "type": "bearer",
-    "bearer": [{ "key": "token", "value": "{{authToken}}", "type": "string" }]
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{authToken}}",
+        "type": "string"
+      }
+    ]
   },
   "item": [
+    {
+      "name": "Auth",
+      "description": "POST /auth/sync is not behind the API Gateway authorizer: the Lambda verifies the Bearer token itself (signature against Cognito's JWKS, issuer, audience, token_use=id) and returns 401 on its own. It uses the same collection-level Bearer {{authToken}}.",
+      "item": [
+        {
+          "name": "Sync User",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 or 201', () => pm.expect(pm.response.code).to.be.oneOf([200, 201]));",
+                  "const data = pm.response.json();",
+                  "pm.test('returns the user', () => pm.expect(data.user.email).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/sync",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "sync"
+              ]
+            },
+            "description": "Call after every login. Creates the user in the Users table if missing (201, \"created\": true) or returns it (200, \"created\": false). On every call it also makes sure the user's default account (accountId \"default\", \"General\" / cash) exists. That's idempotent: it never resets a renamed default account or its balance. 401 if the token is missing/invalid/expired or has no email claim."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Accounts",
+      "description": "Protected by CognitoAuthorizer. Run this folder before Transactions: 'Create Account' sets {{accountId}}, which the Transactions requests reference. Every user also has an undeletable default account (accountId \"default\"), created on login by POST /auth/sync; transactions without an accountId land there. balance/transactionCount are maintained atomically by every transaction create/update/delete, so run List Accounts again after Transactions to see them move.",
+      "item": [
+        {
+          "name": "Create Account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const data = pm.response.json();",
+                  "pm.test('balance starts at openingBalance', () => pm.expect(data.balance).to.eql(data.openingBalance));",
+                  "pm.collectionVariables.set('accountId', data.accountId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"name\": \"Banco de Chile cta corriente\",\n  \"type\": \"debit\",\n  \"isSavings\": false,\n  \"openingBalance\": \"500000\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts"
+              ]
+            },
+            "description": "201 with the created Account: accountId is generated, balance starts at openingBalance, transactionCount 0. Server-managed fields (accountId, balance, transactionCount, isDefault, createdAt, updatedAt) are ignored if sent. 400 with {\"message\": \"Invalid account: ...\"} on missing/invalid fields, e.g. paymentDay on a non-credit account. 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        },
+        {
+          "name": "List Accounts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const accounts = pm.response.json().accounts;",
+                  "pm.test('default account comes first', () => pm.expect(accounts[0].isDefault).to.eql(true));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts"
+              ]
+            },
+            "description": "200 with {\"accounts\": [...]}: every account of whoever authToken belongs to, in one response (no paging), default account first, then oldest first. balance/openingBalance are decimal strings and can be negative. 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        },
+        {
+          "name": "Update Account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"accountId\": \"{{accountId}}\",\n  \"name\": \"Banco de Chile cta corriente\",\n  \"type\": \"debit\",\n  \"isSavings\": false,\n  \"openingBalance\": \"600000\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts"
+              ]
+            },
+            "description": "Full replace of the editable fields (name, type, isSavings, paymentDay, openingBalance): send them all plus accountId. Changing openingBalance shifts balance by the same difference (here +100000). 200 with the updated Account. 400 if accountId is missing or fields are invalid. 404 if no such account. 409 if it changed concurrently. 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Credit Card",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set('cardAccountId', data.accountId);",
+                  "pm.collectionVariables.set('cardPaymentDay', data.paymentDay);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"name\": \"CMR\",\n  \"type\": \"credit\",\n  \"paymentDay\": 5\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts"
+              ]
+            },
+            "description": "A credit account with a paymentDay (its monthly due date). Its statement is created and recalculated as soon as a purchase makes something due, and by the daily job. Sets {{cardAccountId}} and {{cardPaymentDay}}, used by the card requests in Transactions. paymentDay is only allowed on credit accounts."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Account (to delete)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('deleteAccountId', pm.response.json().accountId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"name\": \"CMR\",\n  \"type\": \"credit\",\n  \"paymentDay\": 5\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts"
+              ]
+            },
+            "description": "Creates a throwaway account for 'Delete Account' below, so deleting doesn't touch {{accountId}}, which Transactions uses."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts?accountId={{deleteAccountId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts"
+              ],
+              "query": [
+                {
+                  "key": "accountId",
+                  "value": "{{deleteAccountId}}"
+                }
+              ]
+            },
+            "description": "200 with {\"message\": \"Account deleted\"}. 400 if accountId is missing or is the default account. 404 if no such account. 409 while any transaction (pending included) still references it: move or delete those first. 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Default Account (rejected)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts?accountId=default",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts"
+              ],
+              "query": [
+                {
+                  "key": "accountId",
+                  "value": "default"
+                }
+              ]
+            },
+            "description": "Demonstrates the guard: the default account can never be deleted. Expects 400 {\"message\": \"The default account can't be deleted\"}."
+          },
+          "response": []
+        }
+      ]
+    },
     {
       "name": "Transactions",
       "description": "Protected by CognitoAuthorizer. Inherits the collection-level Bearer auth ({{authToken}}, from the environment) — get a real token by running `AWS_PROFILE=... python api/auth/sync/get_test_token.py` locally.",
@@ -47,32 +463,566 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "options": { "raw": { "language": "json" } },
-              "raw": "{\n  \"title\": \"Groceries\",\n  \"amount\": \"45.90\",\n  \"categories\": [\"food\", \"household\"],\n  \"date\": \"{{todayDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false\n}"
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"title\": \"Groceries\",\n  \"amount\": \"45.90\",\n  \"categories\": [\"food\", \"household\"],\n  \"date\": \"{{todayDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{accountId}}\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/transactions",
-              "host": ["{{baseUrl}}"],
-              "path": ["transactions"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ]
             },
-            "description": "201 on success (full Transaction object, owner is whoever authToken belongs to). 400 with {\"message\": \"Invalid transaction: ...\"} on missing/invalid fields. 401 if authToken is missing/invalid/expired."
+            "description": "201 on success (full Transaction object, owner is whoever authToken belongs to). 400 with {\"message\": \"Invalid transaction: ...\"} on missing/invalid fields. 400 if accountId isn't one of your accounts (omit it to use the default account). 409 if a transactionId you supplied already exists. 401 if authToken is missing/invalid/expired. Subtracts 45.90 from {{accountId}}'s balance (run 'Create Account' first)."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Transfer",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('todayDate', new Date().toISOString().split('T')[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const data = pm.response.json();",
+                  "pm.test('is a transfer between both accounts', () => {",
+                  "  pm.expect(data.type).to.eql('transfer');",
+                  "  pm.expect(data.accountId).to.eql(pm.collectionVariables.get('accountId'));",
+                  "  pm.expect(data.targetAccountId).to.eql('default');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"title\": \"Move to General\",\n  \"amount\": \"200.00\",\n  \"categories\": [],\n  \"date\": \"{{todayDate}}\",\n  \"type\": \"transfer\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{accountId}}\",\n  \"targetAccountId\": \"default\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/transactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ]
+            },
+            "description": "A single movement of `amount` from accountId to targetAccountId (instead of an expense + an income). 201 with the created Transaction. Moves 200 from {{accountId}} to the default account. 400 if type is \"transfer\" but targetAccountId is missing or equals accountId, if targetAccountId is sent with a non-transfer type, or if either account doesn't exist. Doesn't overwrite {{transactionId}}, so Update/Delete below still target the 'Create Transaction' item."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Installment Purchase",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('todayDate', new Date().toISOString().split('T')[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('installments stored', () => pm.expect(pm.response.json().installments).to.eql(12));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"title\": \"TV\",\n  \"amount\": \"120000\",\n  \"categories\": [\n    \"electronics\"\n  ],\n  \"date\": \"{{todayDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{cardAccountId}}\",\n  \"installments\": 12\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/transactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ]
+            },
+            "description": "A card purchase in 12 cuotas dated today: an expense on the card for the FULL amount, so the card's balance shows the whole debt right away (-120000). Each cuota (10000) is billed on one of the next 12 due dates. Since it's dated today, its first cuota is due on the NEXT due date, so the current statement doesn't change. 201 with the Transaction. 400 if {{cardAccountId}} doesn't exist (run Accounts > 'Create Credit Card' first)."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Backdated Card Purchase",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('statementTransactionId', '');",
+                  "// The card's latest due date, same rule as the backend (UTC): this month's paymentDay if reached, else last month's.",
+                  "const paymentDay = Number(pm.collectionVariables.get('cardPaymentDay') || 5);",
+                  "const dueIn = (y, m) => new Date(Date.UTC(y, m, Math.min(paymentDay, new Date(Date.UTC(y, m + 1, 0)).getUTCDate())));",
+                  "const now = new Date();",
+                  "const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));",
+                  "let due = dueIn(today.getUTCFullYear(), today.getUTCMonth());",
+                  "if (due > today) due = dueIn(today.getUTCFullYear(), today.getUTCMonth() - 1);",
+                  "pm.collectionVariables.set('cardDueDate', due.toISOString().slice(0, 10));",
+                  "const dayBefore = new Date(due.getTime() - 24 * 60 * 60 * 1000);",
+                  "pm.collectionVariables.set('backdatedDate', dayBefore.toISOString().slice(0, 10));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('backdatedTransactionId', pm.response.json().transactionId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"title\": \"Supermercado\",\n  \"amount\": \"30000\",\n  \"categories\": [\n    \"food\"\n  ],\n  \"date\": \"{{backdatedDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{cardAccountId}}\",\n  \"installments\": 3\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/transactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ]
+            },
+            "description": "30000 in 3 cuotas, dated the day before the card's latest due date, so its first cuota (10000) is already due: the API creates the card's pending statement right away, before responding. That's the live recalculation (not deployed yet means the statement only appears when the daily job runs). The pre-request script computes {{cardDueDate}} with the same rule as the backend and the handoff's latestDueDate snippet."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Card Statement",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const cardId = pm.collectionVariables.get('cardAccountId');",
+                  "const stmt = pm.response.json().transactions.find(t => t.statement && t.statement.accountId === cardId);",
+                  "pm.test('card statement exists (needs the live recalculation deployed)', () => pm.expect(stmt).to.be.an('object'));",
+                  "if (stmt) {",
+                  "  pm.collectionVariables.set('statementTransactionId', stmt.transactionId);",
+                  "  pm.collectionVariables.set('statementDate', stmt.date);",
+                  "  pm.collectionVariables.set('statementAmount', stmt.amount);",
+                  "  pm.collectionVariables.set('statementRevision', stmt.statement.revision);",
+                  "  pm.test('pending, 1/3 of the backdated purchase', () => {",
+                  "    pm.expect(stmt.pending).to.eql(true);",
+                  "    pm.expect(stmt.amount).to.eql('10000');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?from={{cardDueDate}}&to={{cardDueDate}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{cardDueDate}}"
+                },
+                {
+                  "key": "to",
+                  "value": "{{cardDueDate}}"
+                }
+              ]
+            },
+            "description": "How the frontend finds a card's statement: GET /transactions for exactly the card's latest due date, then the item whose statement.accountId is the card. Expects the statement created by 'Create Backdated Card Purchase': pending, amount 10000 (Supermercado 1/3). Saves it for the next requests. Fails if the live recalculation isn't deployed yet."
+          },
+          "response": []
+        },
+        {
+          "name": "Edit Backdated Card Purchase (recalculates)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"title\": \"Supermercado\",\n  \"amount\": \"60000\",\n  \"categories\": [\n    \"food\"\n  ],\n  \"date\": \"{{backdatedDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{cardAccountId}}\",\n  \"installments\": 3,\n  \"transactionId\": \"{{backdatedTransactionId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/transactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ]
+            },
+            "description": "Doubles the backdated purchase (30000 -> 60000). Before responding, the API recalculates the card's pending statement: its cuota becomes 20000. The response is just the purchase, which is why the frontend refetches the statement (next request)."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Card Statement (recalculated)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const cardId = pm.collectionVariables.get('cardAccountId');",
+                  "const stmt = pm.response.json().transactions.find(t => t.statement && t.statement.accountId === cardId);",
+                  "pm.test('card statement exists (needs the live recalculation deployed)', () => pm.expect(stmt).to.be.an('object'));",
+                  "if (stmt) {",
+                  "  pm.collectionVariables.set('statementTransactionId', stmt.transactionId);",
+                  "  pm.collectionVariables.set('statementDate', stmt.date);",
+                  "  pm.collectionVariables.set('statementAmount', stmt.amount);",
+                  "  pm.test('recalculated to 1/3 of 60000', () => pm.expect(stmt.amount).to.eql('20000'));",
+                  "  pm.test('revision increased', () => pm.expect(stmt.statement.revision).to.be.above(Number(pm.collectionVariables.get('statementRevision'))));",
+                  "  pm.collectionVariables.set('statementRevision', stmt.statement.revision);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?from={{cardDueDate}}&to={{cardDueDate}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{cardDueDate}}"
+                },
+                {
+                  "key": "to",
+                  "value": "{{cardDueDate}}"
+                }
+              ]
+            },
+            "description": "Same lookup as 'Get Card Statement', after the edit: amount 20000 and a higher statement.revision."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Pending Statement (rejected)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?transactionId={{statementTransactionId}}&date={{statementDate}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "transactionId",
+                  "value": "{{statementTransactionId}}"
+                },
+                {
+                  "key": "date",
+                  "value": "{{statementDate}}"
+                }
+              ]
+            },
+            "description": "A pending statement is computed from the card's purchases and payments, so it can't be deleted: expects 400. (Deleting a SETTLED statement is allowed and undoes that payment.)"
+          },
+          "response": []
+        },
+        {
+          "name": "Pay Card Statement",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only after 'Get Card Statement' found the card's statement.",
+                  "if (!pm.collectionVariables.get('statementTransactionId') && pm.execution.skipRequest) {",
+                  "  console.log('No card statement found by Get Card Statement; skipping.');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const data = pm.response.json();",
+                  "pm.test('settled', () => pm.expect(data.pending).to.eql(false));",
+                  "pm.test('breakdown kept', () => pm.expect(data.statement).to.be.an('object'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"title\": \"Pago CMR\",\n  \"amount\": \"{{statementAmount}}\",\n  \"categories\": [],\n  \"date\": \"{{statementDate}}\",\n  \"type\": \"transfer\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{accountId}}\",\n  \"targetAccountId\": \"{{cardAccountId}}\",\n  \"transactionId\": \"{{statementTransactionId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/transactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ]
+            },
+            "description": "Settles the card's pending statement found by 'Get Card Statement': amount = what was actually paid (less carries the rest into next month's statement, more becomes a credit), pending=false, accountId = the account it was paid from. The statement's type, targetAccountId and breakdown always come from the stored item, whatever the body says. Paid statements never change afterwards. Defaults to paying the full amount from {{accountId}}; lower it to try a partial payment. After this, refetch GET /accounts: the source account and the card both moved. Skipped if no statement was found."
           },
           "response": []
         },
         {
           "name": "List Transactions",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const data = pm.response.json();",
+                  "pm.test('echoes the applied date range', () => pm.expect(data.dateRange).to.have.keys('from', 'to'));",
+                  "pm.collectionVariables.set('listFrom', data.dateRange.from);",
+                  "pm.collectionVariables.set('listTo', data.dateRange.to);",
+                  "pm.collectionVariables.set('nextToken', data.nextToken || '');"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "GET",
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/transactions",
-              "host": ["{{baseUrl}}"],
-              "path": ["transactions"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "2026-09-01",
+                  "description": "YYYY-MM-DD, inclusive. Default: one calendar month before `to`.",
+                  "disabled": true
+                },
+                {
+                  "key": "to",
+                  "value": "2026-09-30",
+                  "description": "YYYY-MM-DD, inclusive. Default: today (UTC).",
+                  "disabled": true
+                },
+                {
+                  "key": "limit",
+                  "value": "1",
+                  "description": "Page size 1-200, default 50. Enable with a small value to try 'List Transactions (next page)'.",
+                  "disabled": true
+                }
+              ]
             },
-            "description": "200 with {\"transactions\": [...]} for whoever authToken belongs to, newest first. 401 if authToken is missing/invalid/expired."
+            "description": "With no params: the last month (today UTC minus one calendar month .. today), first page of 50, newest first. Enable the from/to/limit params to override. 200 with {\"transactions\": [...], \"dateRange\": {\"from\", \"to\"}, \"nextToken\": \"...\" | null}. Saves dateRange and nextToken into collection variables for 'List Transactions (next page)'. 400 on bad dates, from after to, or a bad limit. 401 if authToken is missing/invalid/expired."
+          },
+          "response": []
+        },
+        {
+          "name": "List Transactions (next page)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing left to fetch: the previous list call returned nextToken: null.",
+                  "if (!pm.collectionVariables.get('nextToken') && pm.execution.skipRequest) {",
+                  "  console.log('No nextToken from the previous page; skipping.');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const data = pm.response.json();",
+                  "pm.collectionVariables.set('nextToken', data.nextToken || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?from={{listFrom}}&to={{listTo}}&nextToken={{nextToken}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ],
+              "query": [
+                {
+                  "key": "from",
+                  "value": "{{listFrom}}"
+                },
+                {
+                  "key": "to",
+                  "value": "{{listTo}}"
+                },
+                {
+                  "key": "nextToken",
+                  "value": "{{nextToken}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1",
+                  "description": "Keep this equal to the limit used on the previous page.",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Run 'List Transactions' first (with a small limit, otherwise there's usually only one page). Re-sends the exact dateRange from that response plus its nextToken, and stores the new nextToken, so you can send this repeatedly to walk every page. Skipped when there's no nextToken left. 400 if the nextToken is malformed or from a different date range."
           },
           "response": []
         },
@@ -91,18 +1041,31 @@
           ],
           "request": {
             "method": "PUT",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "options": { "raw": { "language": "json" } },
-              "raw": "{\n  \"title\": \"Groceries (updated)\",\n  \"amount\": \"50.00\",\n  \"categories\": [\"food\"],\n  \"date\": \"{{transactionDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"transactionId\": \"{{transactionId}}\"\n}"
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"title\": \"Groceries (updated)\",\n  \"amount\": \"50.00\",\n  \"categories\": [\"food\"],\n  \"date\": \"{{transactionDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{accountId}}\",\n  \"transactionId\": \"{{transactionId}}\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/transactions",
-              "host": ["{{baseUrl}}"],
-              "path": ["transactions"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ]
             },
-            "description": "Full replace — run 'Create Transaction' first so {{transactionId}}/{{transactionDate}} are populated. 200 with the updated Transaction. 400 if transactionId is missing/invalid. 404 if no matching item exists for this token's owner. 401 if authToken is missing/invalid/expired."
+            "description": "Full replace — run 'Create Transaction' first so {{transactionId}}/{{transactionDate}} are populated. 200 with the updated Transaction. 400 if transactionId is missing/invalid. 404 if no matching item exists for this token's owner. 409 if the transaction was changed/deleted by another request meanwhile (reload and retry). 401 if authToken is missing/invalid/expired. Moves {{accountId}}'s balance from the old amount (45.90) to the new one (50.00)."
           },
           "response": []
         },
@@ -124,14 +1087,24 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/transactions?transactionId={{transactionId}}&date={{transactionDate}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["transactions"],
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ],
               "query": [
-                { "key": "transactionId", "value": "{{transactionId}}" },
-                { "key": "date", "value": "{{transactionDate}}" }
+                {
+                  "key": "transactionId",
+                  "value": "{{transactionId}}"
+                },
+                {
+                  "key": "date",
+                  "value": "{{transactionDate}}"
+                }
               ]
             },
-            "description": "Run 'Create Transaction' first so the query params are populated. 200 with {\"message\": \"Transaction deleted\"}. 400 if any param is missing. 404 if no matching item exists for this token's owner. 401 if authToken is missing/invalid/expired."
+            "description": "Run 'Create Transaction' first so the query params are populated. 200 with {\"message\": \"Transaction deleted\"} — its balance effect is reversed (the 50.00 goes back to {{accountId}}). 400 if any param is missing. 404 if no matching item exists for this token's owner. 409 if it was changed by another request meanwhile. 401 if authToken is missing/invalid/expired."
           },
           "response": []
         }
@@ -158,16 +1131,29 @@
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "options": { "raw": { "language": "json" } },
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
               "raw": "{\n  \"title\": \"Netflix\",\n  \"billingDay\": 20,\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"status\": \"active\",\n  \"amount\": \"9990\",\n  \"categories\": [\"subscriptions\", \"entertainment\"]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/subscriptions",
-              "host": ["{{baseUrl}}"],
-              "path": ["subscriptions"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "subscriptions"
+              ]
             },
             "description": "201 on success (full Subscription object, owner is whoever authToken belongs to). 400 with {\"message\": \"Invalid subscription: ...\"} on missing/invalid fields. Omit \"amount\" entirely for a variable-amount subscription (e.g. an electricity bill). 401 if authToken is missing/invalid/expired."
           },
@@ -180,8 +1166,12 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/subscriptions",
-              "host": ["{{baseUrl}}"],
-              "path": ["subscriptions"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "subscriptions"
+              ]
             },
             "description": "200 with {\"subscriptions\": [...]} for whoever authToken belongs to, newest first (sorted by createdAt). 401 if authToken is missing/invalid/expired."
           },
@@ -202,16 +1192,29 @@
           ],
           "request": {
             "method": "PUT",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
             "body": {
               "mode": "raw",
-              "options": { "raw": { "language": "json" } },
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
               "raw": "{\n  \"title\": \"Netflix (updated)\",\n  \"billingDay\": 22,\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"status\": \"disabled\",\n  \"amount\": \"10990\",\n  \"subscriptionId\": \"{{subscriptionId}}\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/subscriptions",
-              "host": ["{{baseUrl}}"],
-              "path": ["subscriptions"]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "subscriptions"
+              ]
             },
             "description": "Full replace — run 'Create Subscription' first so {{subscriptionId}} is populated. 200 with the updated Subscription. 400 if subscriptionId is missing/invalid. 404 if no matching item exists for this token's owner. 401 if authToken is missing/invalid/expired."
           },
@@ -235,9 +1238,18 @@
             "header": [],
             "url": {
               "raw": "{{baseUrl}}/subscriptions?subscriptionId={{subscriptionId}}",
-              "host": ["{{baseUrl}}"],
-              "path": ["subscriptions"],
-              "query": [{ "key": "subscriptionId", "value": "{{subscriptionId}}" }]
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "subscriptions"
+              ],
+              "query": [
+                {
+                  "key": "subscriptionId",
+                  "value": "{{subscriptionId}}"
+                }
+              ]
             },
             "description": "Run 'Create Subscription' first so the query param is populated. 200 with {\"message\": \"Subscription deleted\"}. 400 if the param is missing. 404 if no matching item exists for this token's owner. 401 if authToken is missing/invalid/expired."
           },
