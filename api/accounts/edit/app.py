@@ -16,8 +16,9 @@ from decimal import Decimal
 import msgspec
 from botocore.exceptions import ClientError
 
-from account import account_from_request, get_accounts_table
+from account import PREFERRED_ATTRIBUTE, account_from_request, account_view, get_accounts_table
 from http_utils import get_authenticated_email, json_response
+from transaction import DEFAULT_ACCOUNT_ID
 
 
 def lambda_handler(event, context):
@@ -82,7 +83,14 @@ def _handle(event):
             )
         raise
 
-    return json_response(200, result["Attributes"])
+    updated = result["Attributes"]
+    # isPreferred comes from the pointer stored on the default account item
+    if account_id == DEFAULT_ACCOUNT_ID:
+        default = updated
+    else:
+        default = table.get_item(Key={"email": email, "accountId": DEFAULT_ACCOUNT_ID}).get("Item") or {}
+    preferred = default.get(PREFERRED_ATTRIBUTE) or DEFAULT_ACCOUNT_ID
+    return json_response(200, account_view(updated, preferred))
 
 
 if __name__ == "__main__":

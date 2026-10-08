@@ -4,15 +4,14 @@
 Deletes an account. Protected by the Cognito Lambda Authorizer — `email`
 comes from the verified token.
 
-Refused for the default account (every user always has one), and for any
-account still referenced by a transaction: those transactions would point
-at nothing, and their balance effect would be lost. Move or delete them first.
+Refused for the default account (every user always has one), for the
+user's preferred account (choose another one first), and for any account
+still referenced by a transaction: those transactions would point at
+nothing, and their balance effect would be lost. Move or delete them first.
 """
 import traceback
 
-from botocore.exceptions import ClientError
-
-from account import get_accounts_table
+from account import AccountIsPreferred, AccountNotDeletable, delete_account, get_accounts_table
 from http_utils import get_authenticated_email, json_response
 from transaction import DEFAULT_ACCOUNT_ID
 
@@ -37,20 +36,15 @@ def _handle(event):
     if account_id == DEFAULT_ACCOUNT_ID:
         return json_response(400, {"message": "The default account can't be deleted"})
 
-    table = get_accounts_table()
-    key = {"email": email, "accountId": account_id}
     try:
-        # transactionCount is kept atomically with every transaction write, so
-        # this condition can't race with a transaction being added to the account.
-        table.delete_item(
-            Key=key,
-            ConditionExpression="attribute_exists(accountId) AND transactionCount = :zero",
-            ExpressionAttributeValues={":zero": 0},
+        delete_account(email, account_id)
+    except AccountIsPreferred:
+        return json_response(
+            409,
+            {"message": "This is your preferred account for new transactions; choose another preferred account first"},
         )
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
-            raise
-        existing = table.get_item(Key=key).get("Item")
+    except AccountNotDeletable:
+        existing = get_accounts_table().get_item(Key={"email": email, "accountId": account_id}).get("Item")
         if not existing:
             return json_response(404, {"message": "Account not found"})
         return json_response(

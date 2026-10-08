@@ -4,6 +4,85 @@ Newest first. Subscriptions have their own reference in `subscription_handoff.md
 
 ---
 
+# 2026-10-08 — Preferred account (built, **not deployed yet**)
+
+Users can pick which account is **preselected when creating a transaction**. This is separate from the built-in "General" account, which doesn't change.
+
+## TL;DR: frontend action items
+
+1. **Preselect the preferred account** in the new-transaction form: the account with `isPreferred: true` in `GET /accounts` (also returned as `preferredAccountId` at the top level). Exactly one account always has it; until the user picks one, it's General.
+2. **Let the user choose it,** e.g. a "Usar como cuenta predeterminada" action on each account: `PUT /accounts/preferred` with `{"accountId": "<id>"}`. To go back to General, send `"default"`.
+3. **After setting it,** update `isPreferred` locally (the response tells you the new `preferredAccountId`) or refetch `GET /accounts`.
+4. **Always send the selected `accountId`** when creating a transaction. If you omit it, the backend still uses General, not the preferred account.
+5. **Deleting the preferred account fails with `409`.** Ask the user to choose another preferred account first, or offer "make another account preferred and delete".
+
+## `isDefault` vs `isPreferred`
+
+| | `isDefault` (General) | `isPreferred` |
+|---|---|---|
+| what | the built-in fallback account, `accountId: "default"` | the user's choice for new transactions |
+| set by | the backend (created on login) | the user, via `PUT /accounts/preferred` |
+| which account | always General | any account, including a credit card; General until chosen |
+| used for | transactions sent without `accountId`, subscription bills, the source of card statements | preselecting the account in the frontend form |
+| deletable | never | not while preferred; choose another one first |
+
+## API changes
+
+**Account shape:** a new field on every account returned by `GET`, `POST` and `PUT /accounts`:
+
+```ts
+type Account = {
+  // ...all existing fields
+  isPreferred: boolean; // true on exactly one account (General until the user picks another)
+};
+```
+
+**`GET /accounts`** adds a top-level `preferredAccountId`:
+
+```json
+{
+  "accounts": [
+    { "accountId": "default", "name": "General", "isDefault": true, "isPreferred": false, "...": "..." },
+    { "accountId": "6", "name": "Cuenta RUT", "isDefault": false, "isPreferred": true, "...": "..." }
+  ],
+  "preferredAccountId": "6"
+}
+```
+
+**`PUT /accounts/preferred`** (new):
+
+```json
+{ "accountId": "6" }
+```
+
+| response | when |
+|---|---|
+| `200 {"preferredAccountId": "6"}` | set (sending `"default"` resets it to General) |
+| `400 {"message": "accountId is required"}` | missing/empty `accountId` |
+| `404 {"message": "Account '<id>' does not exist"}` | no such account |
+| `409 {"message": "Accounts changed meanwhile; reload them and retry"}` | concurrent change |
+
+**`DELETE /accounts?accountId=`** has one new response:
+
+| response | when |
+|---|---|
+| `409 {"message": "This is your preferred account for new transactions; choose another preferred account first"}` | the account is the preferred one |
+
+The check and the delete happen in one atomic write, so a "set preferred" racing a "delete" can never leave the preference pointing at a deleted account.
+
+## Postman
+
+In **Accounts**, after "Create Account (to delete)":
+
+1. **Set Preferred Account (to delete)**: makes the throwaway account preferred.
+2. **Delete Preferred Account (rejected)**: expects the `409`.
+3. **Set Preferred Account**: moves the preference to `{{accountId}}`, which releases the throwaway.
+4. **List Accounts (preferred)**: checks that exactly `{{accountId}}` has `isPreferred` and that `preferredAccountId` matches.
+
+The existing "Delete Account" then deletes the throwaway successfully.
+
+---
+
 # 2026-10-08 — Credit card system
 
 Card purchases can be split into installments ("cuotas"), and each credit card gets **one pending payment per month** (its "statement"), like a subscription. The statement is kept up to date automatically.

@@ -2,7 +2,9 @@
 """GET /accounts
 
 Lists the authenticated user's accounts with their current balances,
-default account first, then oldest to newest.
+default account first, then oldest to newest. Exactly one account has
+`isPreferred: true` (the one to preselect for new transactions; the default
+account until the user picks another), also returned as `preferredAccountId`.
 Protected by the Cognito Lambda Authorizer — `email` comes from the verified
 token (requestContext.authorizer.email).
 
@@ -14,7 +16,7 @@ import traceback
 
 from boto3.dynamodb.conditions import Key
 
-from account import get_accounts_table
+from account import account_view, get_accounts_table, preferred_account_id
 from http_utils import get_authenticated_email, json_response
 
 
@@ -45,8 +47,11 @@ def _handle(event):
         query_kwargs["ExclusiveStartKey"] = result["LastEvaluatedKey"]
 
     accounts.sort(key=lambda a: (not a.get("isDefault"), a.get("createdAt", "")))
+    preferred = preferred_account_id(accounts)
     # json_response serializes with default=str, which handles the Decimal balances
-    return json_response(200, {"accounts": accounts})
+    return json_response(
+        200, {"accounts": [account_view(a, preferred) for a in accounts], "preferredAccountId": preferred}
+    )
 
 
 if __name__ == "__main__":

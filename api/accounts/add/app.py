@@ -14,7 +14,7 @@ import traceback
 
 import msgspec
 
-from account import account_from_request, account_to_item, get_accounts_table
+from account import account_from_request, account_to_item, account_view, get_accounts_table
 from http_utils import get_authenticated_email, json_response
 
 
@@ -39,7 +39,8 @@ def _handle(event):
     item = account_to_item(account)
     get_accounts_table().put_item(Item=item, ConditionExpression="attribute_not_exists(accountId)")
 
-    return json_response(201, item)
+    # A brand-new account is never the preferred one (PUT /accounts/preferred)
+    return json_response(201, account_view(item, preferred_id=""))
 
 
 if __name__ == "__main__":

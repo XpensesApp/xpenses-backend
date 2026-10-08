@@ -94,6 +94,14 @@ class AccountNotFound(Exception):
         self.account_id = account_id
 
 
+class AccountIsPreferred(Exception):
+    """The account can't be deleted while it's the user's preferred account."""
+
+
+class AccountNotDeletable(Exception):
+    """The account to delete doesn't exist, or transactions still reference it."""
+
+
 # ---------- (De)serialization ----------
 def parse_account(data: dict) -> Account:
     """Validate + convert an already-parsed dict (e.g. an API Gateway body) into an Account."""
@@ -175,6 +183,126 @@ def ensure_default_account(table, email: str) -> None:
         ExpressionAttributeNames=names,
         ExpressionAttributeValues=values,
     )
+
+
+# ---------- Preferred account ----------
+# The account the frontend preselects for new transactions. A per-user
+# setting, stored as `preferredAccountId` on the user's default account item
+# (which always exists and is never deleted), so changing it is a single-item
+# write and never leaves two accounts flagged. Unset means the default
+# account itself. It's only a preference: server-side fallbacks (a transaction
+# without accountId, subscription bills, card statements) keep using the
+# default account.
+PREFERRED_ATTRIBUTE = "preferredAccountId"
+
+
+def preferred_account_id(accounts: list[dict]) -> str:
+    """The user's preferred accountId, given all their account items.
+
+    Falls back to the default account when unset (or, defensively, when it
+    points at an account that no longer exists).
+    """
+    ids = {account["accountId"] for account in accounts}
+    default = next((account for account in accounts if account["accountId"] == DEFAULT_ACCOUNT_ID), {})
+    preferred = default.get(PREFERRED_ATTRIBUTE)
+    return preferred if preferred in ids else DEFAULT_ACCOUNT_ID
+
+
+def account_view(item: dict, preferred_id: str) -> dict:
+    """An account item as the API returns it: with isPreferred, without the internal pointer."""
+    view = {k: v for k, v in item.items() if k != PREFERRED_ATTRIBUTE}
+    view["isPreferred"] = item["accountId"] == preferred_id
+    return view
+
+
+def set_preferred_account(email: str, account_id: str) -> None:
+    """Make `account_id` the user's preferred account (DEFAULT_ACCOUNT_ID resets it).
+
+    The default account item must exist (ensure_default_account). Raises
+    AccountNotFound if the account doesn't exist; the existence check and the
+    write are one transaction, so this can't race with deleting that account.
+    """
+    default_key = _serialize({"email": email, "accountId": DEFAULT_ACCOUNT_ID})
+    if account_id == DEFAULT_ACCOUNT_ID:
+        ops = [
+            {
+                "Update": {
+                    "TableName": _accounts_table_name(),
+                    "Key": default_key,
+                    "UpdateExpression": "REMOVE #preferred",
+                    "ConditionExpression": "attribute_exists(accountId)",
+                    "ExpressionAttributeNames": {"#preferred": PREFERRED_ATTRIBUTE},
+                }
+            }
+        ]
+    else:
+        ops = [
+            {
+                "ConditionCheck": {
+                    "TableName": _accounts_table_name(),
+                    "Key": _serialize({"email": email, "accountId": account_id}),
+                    "ConditionExpression": "attribute_exists(accountId)",
+                }
+            },
+            {
+                "Update": {
+                    "TableName": _accounts_table_name(),
+                    "Key": default_key,
+                    "UpdateExpression": "SET #preferred = :id",
+                    "ConditionExpression": "attribute_exists(accountId)",
+                    "ExpressionAttributeNames": {"#preferred": PREFERRED_ATTRIBUTE},
+                    "ExpressionAttributeValues": _serialize({":id": account_id}),
+                }
+            },
+        ]
+    try:
+        boto3.client("dynamodb").transact_write_items(TransactItems=ops)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "TransactionCanceledException":
+            raise
+        reasons = exc.response.get("CancellationReasons") or []
+        if account_id != DEFAULT_ACCOUNT_ID and reasons and reasons[0].get("Code") == "ConditionalCheckFailed":
+            raise AccountNotFound(account_id) from exc
+        raise TransactionConflict() from exc
+
+
+def delete_account(email: str, account_id: str) -> None:
+    """Delete an account that no transaction references and that isn't the preferred one.
+
+    Raises AccountIsPreferred, or AccountNotDeletable if it doesn't exist or
+    still has transactions. Both conditions are checked in the same
+    transaction as the delete, so neither a new transaction on the account
+    nor making it preferred can slip in between.
+    """
+    ops = [
+        {
+            "Delete": {
+                "TableName": _accounts_table_name(),
+                "Key": _serialize({"email": email, "accountId": account_id}),
+                # transactionCount is kept atomically with every transaction write
+                "ConditionExpression": "attribute_exists(accountId) AND transactionCount = :zero",
+                "ExpressionAttributeValues": _serialize({":zero": 0}),
+            }
+        },
+        {
+            "ConditionCheck": {
+                "TableName": _accounts_table_name(),
+                "Key": _serialize({"email": email, "accountId": DEFAULT_ACCOUNT_ID}),
+                "ConditionExpression": "attribute_not_exists(#preferred) OR #preferred <> :id",
+                "ExpressionAttributeNames": {"#preferred": PREFERRED_ATTRIBUTE},
+                "ExpressionAttributeValues": _serialize({":id": account_id}),
+            }
+        },
+    ]
+    try:
+        boto3.client("dynamodb").transact_write_items(TransactItems=ops)
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "TransactionCanceledException":
+            raise
+        reasons = exc.response.get("CancellationReasons") or []
+        if len(reasons) > 1 and reasons[1].get("Code") == "ConditionalCheckFailed":
+            raise AccountIsPreferred() from exc
+        raise AccountNotDeletable() from exc
 
 
 # ---------- Transaction effects ----------

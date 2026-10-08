@@ -555,6 +555,7 @@ Resources:
               Action:
                 - dynamodb:GetItem
                 - dynamodb:DeleteItem
+                - dynamodb:ConditionCheckItem # not the preferred account (same transaction as the delete)
               Resource:
                 - !Sub
                   - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
@@ -569,6 +570,43 @@ Resources:
             RestApiId: !Ref XpensesApi
             Path: /accounts
             Method: DELETE
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  PreferredAccountFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub accounts-preferred-${StageName}
+      CodeUri: api/accounts/preferred/
+      Handler: app.lambda_handler
+      Layers:
+        - !Ref ModelsLayer
+      Environment:
+        Variables:
+          ACCOUNTS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - AccountsTableName
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:UpdateItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${AccountsTable}
+                  - AccountsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - AccountsTableName
+      Events:
+        SetPreferredAccount:
+          Type: Api
+          Properties:
+            RestApiId: !Ref XpensesApi
+            Path: /accounts/preferred
+            Method: PUT
             Auth:
               Authorizer: CognitoAuthorizer
 

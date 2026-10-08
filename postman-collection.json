@@ -148,7 +148,7 @@
     },
     {
       "name": "Accounts",
-      "description": "Protected by CognitoAuthorizer. Run this folder before Transactions: 'Create Account' sets {{accountId}}, which the Transactions requests reference. Every user also has an undeletable default account (accountId \"default\"), created on login by POST /auth/sync; transactions without an accountId land there. balance/transactionCount are maintained atomically by every transaction create/update/delete, so run List Accounts again after Transactions to see them move.",
+      "description": "Protected by CognitoAuthorizer. Run this folder before Transactions: 'Create Account' sets {{accountId}}, which the Transactions requests reference. Every user also has an undeletable default account (accountId \"default\"), created on login by POST /auth/sync; transactions without an accountId land there. balance/transactionCount are maintained atomically by every transaction create/update/delete, so run List Accounts again after Transactions to see them move. Each user also has a preferred account (isPreferred: true on exactly one account, General until chosen): the one the frontend preselects for new transactions, set with PUT /accounts/preferred.",
       "item": [
         {
           "name": "Create Account",
@@ -206,7 +206,9 @@
                 "exec": [
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "const accounts = pm.response.json().accounts;",
-                  "pm.test('default account comes first', () => pm.expect(accounts[0].isDefault).to.eql(true));"
+                  "pm.test('default account comes first', () => pm.expect(accounts[0].isDefault).to.eql(true));",
+                  "pm.test('exactly one preferred account', () => pm.expect(accounts.filter(a => a.isPreferred).length).to.eql(1));",
+                  "pm.test('preferredAccountId matches the flagged account', () => pm.expect(accounts.find(a => a.isPreferred).accountId).to.eql(pm.response.json().preferredAccountId));"
                 ]
               }
             }
@@ -223,7 +225,7 @@
                 "accounts"
               ]
             },
-            "description": "200 with {\"accounts\": [...]}: every account of whoever authToken belongs to, in one response (no paging), default account first, then oldest first. balance/openingBalance are decimal strings and can be negative. 401 if authToken is missing/invalid/expired."
+            "description": "200 with {\"accounts\": [...], \"preferredAccountId\": \"...\"}: every account of whoever authToken belongs to, in one response (no paging), default account first, then oldest first. balance/openingBalance are decimal strings and can be negative. 401 if authToken is missing/invalid/expired. Exactly one account has isPreferred: true: preselect it in the new-transaction form."
           },
           "response": []
         },
@@ -361,6 +363,164 @@
           "response": []
         },
         {
+          "name": "Set Preferred Account (to delete)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('echoes it', () => pm.expect(pm.response.json().preferredAccountId).to.eql(pm.collectionVariables.get('deleteAccountId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"accountId\": \"{{deleteAccountId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/preferred",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts",
+                "preferred"
+              ]
+            },
+            "description": "Makes the throwaway account the preferred one (the account the frontend preselects for new transactions), to show the delete guard next. 200 with {\"preferredAccountId\": \"...\"}. 404 if the account doesn't exist. Send \"default\" to reset it to General."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Preferred Account (rejected)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts?accountId={{deleteAccountId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts"
+              ],
+              "query": [
+                {
+                  "key": "accountId",
+                  "value": "{{deleteAccountId}}"
+                }
+              ]
+            },
+            "description": "The preferred account can't be deleted: expects 409 \"This is your preferred account for new transactions; choose another preferred account first\". The check is in the same atomic write as the delete."
+          },
+          "response": []
+        },
+        {
+          "name": "Set Preferred Account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"accountId\": \"{{accountId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/preferred",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts",
+                "preferred"
+              ]
+            },
+            "description": "Moves the preference to {{accountId}} (which also releases the throwaway, so 'Delete Account' below works). Any account can be preferred, credit cards included. It's only a preference: a transaction sent without accountId still goes to General. 200 with {\"preferredAccountId\": \"...\"}; 400 without accountId; 404 for an unknown account."
+          },
+          "response": []
+        },
+        {
+          "name": "List Accounts (preferred)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const data = pm.response.json();",
+                  "const id = pm.collectionVariables.get('accountId');",
+                  "pm.test('only the Create Account account is preferred', () => pm.expect(data.accounts.filter(a => a.isPreferred).map(a => a.accountId)).to.eql([id]));",
+                  "pm.test('preferredAccountId matches', () => pm.expect(data.preferredAccountId).to.eql(id));",
+                  "pm.test('General is still the default (fallback) account', () => pm.expect(data.accounts.find(a => a.isDefault).accountId).to.eql('default'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/accounts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts"
+              ]
+            },
+            "description": "After 'Set Preferred Account': only {{accountId}} has isPreferred: true, and the top-level preferredAccountId matches."
+          },
+          "response": []
+        },
+        {
           "name": "Delete Account",
           "event": [
             {
@@ -391,7 +551,7 @@
                 }
               ]
             },
-            "description": "200 with {\"message\": \"Account deleted\"}. 400 if accountId is missing or is the default account. 404 if no such account. 409 while any transaction (pending included) still references it: move or delete those first. 401 if authToken is missing/invalid/expired."
+            "description": "200 with {\"message\": \"Account deleted\"}. 400 if accountId is missing or is the default account. 404 if no such account. 409 while any transaction (pending included) still references it (move or delete those first), or while it's the preferred account (choose another one first). 401 if authToken is missing/invalid/expired."
           },
           "response": []
         },

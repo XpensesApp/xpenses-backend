@@ -54,9 +54,12 @@ Serverless expense tracker backend: AWS Lambda + DynamoDB + API Gateway, Python,
 | `balance` | Decimal | **server-managed**: `openingBalance` + effect of every settled transaction |
 | `transactionCount` | int | **server-managed**: transactions referencing the account (as `accountId` or `targetAccountId`) |
 | `isDefault` | bool | **server-managed**: `true` only on the default account |
+| `isPreferred` | bool | **derived**, in API responses only: `true` on exactly one account, the user's preferred account for new transactions (the default account until they pick another) |
 | `createdAt`, `updatedAt` | datetime | **server-managed** |
 
 Server-managed fields are ignored when a client sends them, and clients can never pick an `accountId`.
+
+**Preferred account:** the account the frontend preselects for new transactions. Stored as `preferredAccountId` on the user's default account item (it always exists and is never deleted), so setting it is a single-item write and two accounts can never both be flagged. `PUT /accounts/preferred` sets it inside a transaction that checks the target exists. `DELETE /accounts` refuses (`409`) to delete the preferred account, checking that in the same transaction as the delete, so the two can't race. API responses expose it as `isPreferred` on each account (and `preferredAccountId` on `GET /accounts`) and never return the raw pointer. It's only a preference: server-side fallbacks (no `accountId`, subscription bills, card statement source) keep using the default account.
 
 **Default account:** every user has one with `accountId: "default"` (fixed, so no lookup is needed), created as `"General"` / `cash` by `ensure_default_account`. `POST /auth/sync` calls it on **every** sync, not only for new users, so users that predate accounts get one on their next login. It's idempotent (`if_not_exists` on every attribute), so a later sync never resets its name or balance. It can be renamed but never deleted. Every transaction without an `accountId` lands there, including the pending ones the billing job generates.
 
@@ -103,7 +106,8 @@ Create/update/delete also update the referenced accounts atomically (see `Accoun
 - `POST /accounts` — create (server generates `accountId`; `balance` starts at `openingBalance`)
 - `GET /accounts` — all of the caller's accounts in one response (no paging), default account first, then oldest first
 - `PUT /accounts` (needs `accountId`) — full replace of the editable fields; changing `openingBalance` shifts `balance` by the same difference
-- `DELETE /accounts?accountId=` — `400` for the default account, `409` while `transactionCount > 0`
+- `DELETE /accounts?accountId=` — `400` for the default account, `409` while `transactionCount > 0` or while it's the preferred account
+- `PUT /accounts/preferred` (`{"accountId": ...}`; `"default"` resets) — set the preferred account; `404` if it doesn't exist
 
 **Subscriptions CRUD** (`api/subscriptions/{add,get,edit,delete}`) — **protected** by `CognitoAuthorizer` too, same rule as Transactions:
 - `POST /subscriptions` — create
