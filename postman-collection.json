@@ -22,6 +22,11 @@
       "type": "string"
     },
     {
+      "key": "transactionFullDateUtc",
+      "value": "",
+      "type": "string"
+    },
+    {
       "key": "listFrom",
       "value": "",
       "type": "string"
@@ -604,7 +609,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.collectionVariables.set('todayDate', new Date().toISOString().split('T')[0]);"
+                  "pm.collectionVariables.set('todayDate', new Date().toISOString().split('T')[0]);",
+                  "pm.collectionVariables.set('transactionFullDateUtc', new Date().toISOString());"
                 ]
               }
             },
@@ -616,7 +622,12 @@
                   "pm.test('status is 201', () => pm.response.to.have.status(201));",
                   "const data = pm.response.json();",
                   "pm.collectionVariables.set('transactionId', data.transactionId);",
-                  "pm.collectionVariables.set('transactionDate', data.date);"
+                  "pm.collectionVariables.set('transactionDate', data.date);",
+                  "pm.test('full_date_utc stored in UTC, without milliseconds', () => {",
+                  "  const sent = pm.collectionVariables.get('transactionFullDateUtc');",
+                  "  pm.expect(data.full_date_utc).to.eql(sent.replace(/\\.\\d+Z$/, 'Z'));",
+                  "});",
+                  "pm.collectionVariables.set('transactionFullDateUtc', data.full_date_utc);"
                 ]
               }
             }
@@ -636,7 +647,7 @@
                   "language": "json"
                 }
               },
-              "raw": "{\n  \"title\": \"Groceries\",\n  \"amount\": \"45.90\",\n  \"categories\": [\"food\", \"household\"],\n  \"date\": \"{{todayDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{accountId}}\"\n}"
+              "raw": "{\n  \"title\": \"Groceries\",\n  \"amount\": \"45.90\",\n  \"categories\": [\n    \"food\",\n    \"household\"\n  ],\n  \"date\": \"{{todayDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{accountId}}\",\n  \"full_date_utc\": \"{{transactionFullDateUtc}}\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/transactions",
@@ -647,7 +658,7 @@
                 "transactions"
               ]
             },
-            "description": "201 on success (full Transaction object, owner is whoever authToken belongs to). 400 with {\"message\": \"Invalid transaction: ...\"} on missing/invalid fields. 400 if accountId isn't one of your accounts (omit it to use the default account). 409 if a transactionId you supplied already exists. 401 if authToken is missing/invalid/expired. Subtracts 45.90 from {{accountId}}'s balance (run 'Create Account' first)."
+            "description": "201 on success (full Transaction object, owner is whoever authToken belongs to). 400 with {\"message\": \"Invalid transaction: ...\"} on missing/invalid fields. 400 if accountId isn't one of your accounts (omit it to use the default account). 409 if a transactionId you supplied already exists. 401 if authToken is missing/invalid/expired. Subtracts 45.90 from {{accountId}}'s balance (run 'Create Account' first). `full_date_utc` is the exact moment: any UTC offset is accepted (e.g. new Date().toISOString(), or \"2026-10-08T14:30:00-03:00\"), and it's stored and returned in UTC as \"YYYY-MM-DDTHH:MM:SSZ\". Optional: without it the transaction is placed at 00:00 Chilean time on `date`. 400 if it isn't a datetime with an offset, or doesn't fall on `date` (see 'Create Transaction (time not on date, rejected)')."
           },
           "response": []
         },
@@ -674,6 +685,9 @@
                   "  pm.expect(data.type).to.eql('transfer');",
                   "  pm.expect(data.accountId).to.eql(pm.collectionVariables.get('accountId'));",
                   "  pm.expect(data.targetAccountId).to.eql('default');",
+                  "});",
+                  "pm.test('no full_date_utc sent -> 00:00 Chilean time on date', () => {",
+                  "  pm.expect(data.full_date_utc).to.match(new RegExp('^' + data.date + 'T0[34]:00:00Z$'));",
                   "});"
                 ]
               }
@@ -705,7 +719,63 @@
                 "transactions"
               ]
             },
-            "description": "A single movement of `amount` from accountId to targetAccountId (instead of an expense + an income). 201 with the created Transaction. Moves 200 from {{accountId}} to the default account. 400 if type is \"transfer\" but targetAccountId is missing or equals accountId, if targetAccountId is sent with a non-transfer type, or if either account doesn't exist. Doesn't overwrite {{transactionId}}, so Update/Delete below still target the 'Create Transaction' item."
+            "description": "A single movement of `amount` from accountId to targetAccountId (instead of an expense + an income). 201 with the created Transaction. Moves 200 from {{accountId}} to the default account. 400 if type is \"transfer\" but targetAccountId is missing or equals accountId, if targetAccountId is sent with a non-transfer type, or if either account doesn't exist. Doesn't overwrite {{transactionId}}, so Update/Delete below still target the 'Create Transaction' item. Sends no full_date_utc, so it's placed at 00:00 Chilean time on `date`: T03:00:00Z in summer time (UTC-3), T04:00:00Z in winter time (UTC-4)."
+          },
+          "response": []
+        },
+        {
+          "name": "Create Transaction (time not on date, rejected)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const now = new Date();",
+                  "pm.collectionVariables.set('todayDate', now.toISOString().split('T')[0]);",
+                  "// 3 days after `date`: no timezone puts that moment on today's date",
+                  "pm.variables.set('offDateFullDateUtc', new Date(now.getTime() + 3 * 24 * 3600 * 1000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('explains why', () => pm.expect(pm.response.json().message).to.include('full_date_utc must fall on date'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"title\": \"Wrong time\",\n  \"amount\": \"45.90\",\n  \"categories\": [\n    \"food\",\n    \"household\"\n  ],\n  \"date\": \"{{todayDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{accountId}}\",\n  \"full_date_utc\": \"{{offDateFullDateUtc}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/transactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ]
+            },
+            "description": "`full_date_utc` must fall on `date` in some timezone (UTC-12 to UTC+14), e.g. a late-evening purchase in Chile can be the next day in UTC and is fine, but this one is 3 days off: 400 {\"message\": \"Invalid transaction: full_date_utc must fall on date\"}, nothing written. That also catches a stale time sent after changing `date` in an edit. Sending it without an offset (\"2026-10-08T14:30:00\") or as a bare date is a 400 too."
           },
           "response": []
         },
@@ -1033,7 +1103,8 @@
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "const data = pm.response.json();",
                   "pm.test('settled', () => pm.expect(data.pending).to.eql(false));",
-                  "pm.test('breakdown kept', () => pm.expect(data.statement).to.be.an('object'));"
+                  "pm.test('breakdown kept', () => pm.expect(data.statement).to.be.an('object'));",
+                  "pm.test('full_date_utc ignored on a statement: still 00:00 Chilean time on its due date', () => pm.expect(data.full_date_utc).to.match(new RegExp('^' + data.date + 'T0[34]:00:00Z$')));"
                 ]
               }
             }
@@ -1053,7 +1124,7 @@
                   "language": "json"
                 }
               },
-              "raw": "{\n  \"title\": \"Pago CMR\",\n  \"amount\": \"{{statementAmount}}\",\n  \"categories\": [],\n  \"date\": \"{{statementDate}}\",\n  \"type\": \"transfer\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{accountId}}\",\n  \"targetAccountId\": \"{{cardAccountId}}\",\n  \"transactionId\": \"{{statementTransactionId}}\"\n}"
+              "raw": "{\n  \"title\": \"Pago CMR\",\n  \"amount\": \"{{statementAmount}}\",\n  \"categories\": [],\n  \"date\": \"{{statementDate}}\",\n  \"type\": \"transfer\",\n  \"affectsBalance\": true,\n  \"pending\": false,\n  \"accountId\": \"{{accountId}}\",\n  \"targetAccountId\": \"{{cardAccountId}}\",\n  \"transactionId\": \"{{statementTransactionId}}\",\n  \"full_date_utc\": \"{{$isoTimestamp}}\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/transactions",
@@ -1064,7 +1135,7 @@
                 "transactions"
               ]
             },
-            "description": "Settles the card's pending statement found by 'Get Card Statement': amount = what was actually paid (less carries the rest into next month's statement, more becomes a credit), pending=false, accountId = the account it was paid from. The statement's type, targetAccountId and breakdown always come from the stored item, whatever the body says. Paid statements never change afterwards. Defaults to paying the full amount from {{accountId}}; lower it to try a partial payment. After this, refetch GET /accounts: the source account and the card both moved. Skipped if no statement was found."
+            "description": "Settles the card's pending statement found by 'Get Card Statement': amount = what was actually paid (less carries the rest into next month's statement, more becomes a credit), pending=false, accountId = the account it was paid from. The statement's type, targetAccountId and breakdown always come from the stored item, whatever the body says. Paid statements never change afterwards. Defaults to paying the full amount from {{accountId}}; lower it to try a partial payment. After this, refetch GET /accounts: the source account and the card both moved. Skipped if no statement was found. It also sends full_date_utc (the current time) to show it's ignored on a statement, like its date: the response keeps 00:00 Chilean time on the due date."
           },
           "response": []
         },
@@ -1079,6 +1150,7 @@
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "const data = pm.response.json();",
                   "pm.test('echoes the applied date range', () => pm.expect(data.dateRange).to.have.keys('from', 'to'));",
+                  "pm.test('every transaction has full_date_utc', () => data.transactions.forEach(t => pm.expect(t.full_date_utc).to.match(/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$/)));",
                   "pm.collectionVariables.set('listFrom', data.dateRange.from);",
                   "pm.collectionVariables.set('listTo', data.dateRange.to);",
                   "pm.collectionVariables.set('nextToken', data.nextToken || '');"
@@ -1194,7 +1266,10 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('full_date_utc omitted -> stored time kept', () => {",
+                  "  pm.expect(pm.response.json().full_date_utc).to.eql(pm.collectionVariables.get('transactionFullDateUtc'));",
+                  "});"
                 ]
               }
             }
@@ -1225,7 +1300,7 @@
                 "transactions"
               ]
             },
-            "description": "Full replace — run 'Create Transaction' first so {{transactionId}}/{{transactionDate}} are populated. 200 with the updated Transaction. 400 if transactionId is missing/invalid. 404 if no matching item exists for this token's owner. 409 if the transaction was changed/deleted by another request meanwhile (reload and retry). 401 if authToken is missing/invalid/expired. Moves {{accountId}}'s balance from the old amount (45.90) to the new one (50.00)."
+            "description": "Full replace — run 'Create Transaction' first so {{transactionId}}/{{transactionDate}} are populated. 200 with the updated Transaction. 400 if transactionId is missing/invalid. 404 if no matching item exists for this token's owner. 409 if the transaction was changed/deleted by another request meanwhile (reload and retry). 401 if authToken is missing/invalid/expired. Moves {{accountId}}'s balance from the old amount (45.90) to the new one (50.00). Omits full_date_utc, so the stored one from 'Create Transaction' is kept (it's only reset, to 00:00 Chilean time on the new date, when `date` changes without one). On a card statement it's always the stored one."
           },
           "response": []
         },

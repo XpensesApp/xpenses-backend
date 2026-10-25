@@ -1,2 +1,4 @@
 msgspec==0.21.1
 python-jose[cryptography]==3.5.0
+# zoneinfo data (America/Santiago): the Lambda runtime and Windows may not ship it
+tzdata==2026.5

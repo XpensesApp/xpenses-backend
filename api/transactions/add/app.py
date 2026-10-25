@@ -6,6 +6,9 @@ Creates a new transaction. Protected by the Cognito Lambda Authorizer —
 from the request body, so a caller can only ever create transactions for
 themselves. Any "email" in the body is ignored/overwritten.
 
+`full_date_utc` (the exact moment, any UTC offset) is optional; without it
+the transaction is placed at 00:00 Chilean time on `date` (see transaction.py).
+
 The transaction and its effect on account balances (see account.py) are
 written atomically. `statement` is server-managed (only the card statements
 job creates statements), so it's dropped from the body. Afterwards, the

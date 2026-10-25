@@ -3,8 +3,10 @@ import enum
 import os
 import uuid
 from datetime import date as date_
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Annotated, Optional
+from zoneinfo import ZoneInfo
 
 import boto3
 import msgspec
@@ -13,6 +15,10 @@ import msgspec
 # Every user has an undeletable account with this fixed id (see account.py);
 # a transaction that doesn't name an account is assigned to it.
 DEFAULT_ACCOUNT_ID = "default"
+
+# Users are in Chile: a transaction's `date` is a Chilean calendar date, and
+# one without a known time of day is placed at 00:00 Chilean time on it.
+LOCAL_TIMEZONE = ZoneInfo("America/Santiago")
 
 
 class TransactionType(str, enum.Enum):
@@ -56,6 +62,9 @@ class Transaction(msgspec.Struct):
     pending: bool
 
     # Defaulted / optional
+    # The exact moment, stored in UTC (sent with any offset, e.g. "...Z" or "...-03:00").
+    # Falls back to 00:00 Chilean time on `date`; see __post_init__.
+    full_date_utc: Optional[Annotated[datetime, msgspec.Meta(tz=True)]] = None
     transactionId: str = msgspec.field(default_factory=lambda: uuid.uuid4().hex)
     sk: str = ""  # DynamoDB sort key; computed in __post_init__ if not already set
     accountId: Optional[str] = None  # falls back to DEFAULT_ACCOUNT_ID; source account for a transfer
@@ -91,10 +100,31 @@ class Transaction(msgspec.Struct):
         elif self.targetAccountId is not None:
             raise ValueError("targetAccountId is only allowed when type is transfer")
 
+        if self.full_date_utc is None:
+            self.full_date_utc = start_of_day_utc(self.date)
+        else:
+            self.full_date_utc = self.full_date_utc.astimezone(timezone.utc).replace(microsecond=0)
+            # `date` is the user's local calendar date, so the moment must fall
+            # on it in some timezone (UTC-12 to UTC+14). Catches a stale time
+            # left over after the date was changed.
+            day_start = datetime.combine(self.date, time(), tzinfo=timezone.utc)
+            if not day_start - timedelta(hours=14) <= self.full_date_utc < day_start + timedelta(hours=36):
+                raise ValueError("full_date_utc must fall on date")
+
         # Only derive sk on fresh creation; preserve it as-is when rehydrating
         # an item that already has one (e.g. read back from DynamoDB).
         if not self.sk:
             self.sk = build_sk(self.date, self.transactionId)
+
+
+def start_of_day_utc(day: date_) -> datetime:
+    """00:00 Chilean time on `day`, in UTC (03:00Z or 04:00Z depending on daylight saving time)."""
+    return datetime.combine(day, time(), tzinfo=LOCAL_TIMEZONE).astimezone(timezone.utc)
+
+
+def format_utc(moment: datetime) -> str:
+    """How full_date_utc is stored and returned: "YYYY-MM-DDTHH:MM:SSZ"."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------- (De)serialization ----------
@@ -141,6 +171,7 @@ def transaction_to_item(transaction: Transaction) -> dict:
     item = msgspec.structs.asdict(transaction)
     # DynamoDB has no native date/enum type; Decimal (amount) is already Dynamo-compatible.
     item["date"] = transaction.date.isoformat()
+    item["full_date_utc"] = format_utc(transaction.full_date_utc)
     item["type"] = transaction.type.value
     if transaction.statement is not None:
         # asdict is shallow; turn the nested structs into plain maps (dates -> ISO strings)

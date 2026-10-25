@@ -6,7 +6,7 @@ Serverless expense tracker backend: AWS Lambda + DynamoDB + API Gateway, Python,
 
 - `api/<domain>/<function>/` — only Lambdas exposed as API Gateway endpoints (e.g. `api/transactions/add/` = `POST /transactions`).
 - `<function>/` at the repo root — Lambdas that aren't endpoints: `authorizer/` (the Cognito Lambda Authorizer), `billing/` (the scheduled daily subscription billing job) and `statements/` (the scheduled daily credit card statements job).
-- `migrations/` — one-off local scripts run against the real tables (never deployed). Dry run by default, `--apply` to write. `credit_cards_2026_10.py` moves existing data to the accounts/transfers/card-statements model: it merges two-movement transfers, generates each card's first statement, and reports duplicates and other suspects.
+- `migrations/` — one-off local scripts run against the real tables (never deployed). Dry run by default, `--apply` to write. `credit_cards_2026_10.py` moves existing data to the accounts/transfers/card-statements model: it merges two-movement transfers, generates each card's first statement, and reports duplicates and other suspects. `full_date_utc_2026_10.py` gives every transaction written before `full_date_utc` existed 00:00 Chilean time on its `date`, in UTC.
 - `layers/models/` — the shared `ModelsLayer` (models, DynamoDB helpers, HTTP/auth utils), imported by every function.
 
 ## Entities
@@ -25,7 +25,8 @@ Serverless expense tracker backend: AWS Lambda + DynamoDB + API Gateway, Python,
 | `title` | str | non-empty |
 | `amount` | Decimal | magnitude only; sign comes from `type` |
 | `categories` | list[str] | free-form tags, no separate entity |
-| `date` | date | |
+| `date` | date | the user's local (Chilean) calendar date; drives the key, ranges and card statements |
+| `full_date_utc` | datetime | the exact moment, stored and returned as `"YYYY-MM-DDTHH:MM:SSZ"`. Accepts any UTC offset (normalized to UTC, sub-seconds dropped); must fall on `date` in some timezone (UTC-12 to UTC+14), else `400`. Falls back to 00:00 Chilean time on `date` (`03:00Z` or `04:00Z`). On `PUT`, omitting it keeps the stored value unless `date` changed; card statements always keep theirs |
 | `type` | `TransactionType` enum | `EXPENSE` / `INCOME` / `TRANSFER` |
 | `affectsBalance` | bool | |
 | `pending` | bool | |
