@@ -48,3 +48,4 @@ build/
 Thumbs.db
 xpenses-backend.postman_collection.json
 subscription_handoff.md
+.local/
