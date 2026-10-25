@@ -10,17 +10,13 @@ Per the API Gateway TOKEN-authorizer contract: raising an exception with the
 exact message "Unauthorized" is what produces a 401 response; any other
 exception message/type produces a 500.
 
-The 401 body itself is customized via GatewayResponseDefault4xx in
-template.yaml, NOT a dedicated GatewayResponseUnauthorized (ResponseType:
-UNAUTHORIZED) — confirmed empirically that UNAUTHORIZED genuinely never
-applies to this failure mode (patched it with a debug marker + zero wait,
-never appeared), while DEFAULT_4XX does apply, just needs a few seconds to
-propagate after a deploy before it's visible (an earlier test on DEFAULT_4XX
-gave a false negative from testing too soon after patching). DEFAULT_4XX is
-safe to use for an auth-specific message here since our own Lambda-level
-400/404 responses never go through GatewayResponse at all — those are
-ordinary successful Lambda executions that just happen to return a
-4xx-flavored body, so they can't collide with it.
+The 401 body and its CORS headers come from the DEFAULT_4XX gateway
+response declared on XpensesApi in template.yaml (the 401 is an UNAUTHORIZED
+gateway response, which inherits from DEFAULT_4XX). DEFAULT_4XX is safe to
+use for an auth-specific message here since our own Lambda-level 400/404
+responses never go through GatewayResponse at all — those are ordinary
+successful Lambda executions that just happen to return a 4xx-flavored
+body, so they can't collide with it.
 """
 from cognito_auth import AuthError, extract_bearer_token, verify_token
 

@@ -21,7 +21,11 @@ except ImportError:
     pass
 
 USER_POOL_ID = os.environ["COGNITO_USER_POOL_ID"]
-APP_CLIENT_ID = os.environ["COGNITO_APP_CLIENT_ID"]
+# Comma-separated: every app client whose ID tokens are accepted (more than
+# one while users move from one client to another).
+APP_CLIENT_IDS = {
+    client_id.strip() for client_id in os.environ["COGNITO_APP_CLIENT_IDS"].split(",") if client_id.strip()
+}
 COGNITO_REGION = os.environ["COGNITO_REGION"]
 
 ISSUER = f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{USER_POOL_ID}"
@@ -64,14 +68,19 @@ def verify_token(token: str) -> dict[str, Any]:
             token,
             signing_key,
             algorithms=["RS256"],
-            audience=APP_CLIENT_ID,
             issuer=ISSUER,
             # We only ever receive the ID token, not the access token it was
             # issued alongside, so there's nothing to check at_hash against.
-            options={"verify_at_hash": False},
+            # The audience is checked below: jose only accepts a single one.
+            options={"verify_at_hash": False, "verify_aud": False},
         )
     except JOSEError as exc:
         raise AuthError(f"Invalid token: {exc}") from exc
+
+    # An ID token's "aud" is the app client that issued it
+    audience = claims.get("aud")
+    if not isinstance(audience, str) or audience not in APP_CLIENT_IDS:
+        raise AuthError("Invalid token: Invalid audience")
 
     # Cognito issues both ID and access tokens; only ID tokens carry profile
     # claims (email, name) and an "aud" claim, so require that specifically.

@@ -31,13 +31,17 @@ Mappings:
       AccountsTableName: xpenses-accounts-table-prod
 
   CognitoConfig:
+    # AppClientIds: comma-separated app clients whose ID tokens are accepted.
+    # 6bc94... is the old confidential client (Auth.js, and the one
+    # get_test_token.py uses); 2mqd6... the public client the frontend signs
+    # in with through Amplify. Drop the old one once nothing uses it.
     dev:
       UserPoolId: us-east-1_O00lHTebz
-      AppClientId: 6bc94amej9csqr0du5p3bdmcvf
+      AppClientIds: 6bc94amej9csqr0du5p3bdmcvf,2mqd6elep72e757thv1v7grk7
       Region: us-east-1
     prod:
       UserPoolId: us-east-1_O00lHTebz
-      AppClientId: 6bc94amej9csqr0du5p3bdmcvf
+      AppClientIds: 6bc94amej9csqr0du5p3bdmcvf,2mqd6elep72e757thv1v7grk7
       Region: us-east-1
 
 Resources:
@@ -64,7 +68,9 @@ Resources:
       StageName: !Ref StageName
       Cors:
         AllowOrigin: "'*'"
-        AllowHeaders: "'*'"
+        # Listed, not "'*'": in a preflight the wildcard doesn't cover
+        # Authorization (Fetch spec), so stricter browsers would block it.
+        AllowHeaders: "'Authorization,Content-Type'"
         AllowMethods: "'*'"
       Auth:
         # No DefaultAuthorizer — most routes stay unprotected for now; this
@@ -78,43 +84,31 @@ Resources:
               Header: Authorization
               ValidationExpression: "^Bearer .+$"
               ReauthorizeEvery: 300 # cache a valid decision for 5 minutes per token
-
-  #########################################
-  # Gateway Responses (CORS on API Gateway-level errors)
-  #########################################
-  # This is what actually fires for CognitoAuthorizerFunction's 401 (raising
-  # Exception("Unauthorized")) — NOT a dedicated GatewayResponseUnauthorized
-  # (ResponseType: UNAUTHORIZED). Confirmed empirically: UNAUTHORIZED never
-  # applies to this failure mode (patched it with a debug marker + zero
-  # wait, never appeared); DEFAULT_4XX does apply, it just needs a few
-  # seconds to propagate after a deploy before it's visible — an earlier
-  # test on DEFAULT_4XX gave a false negative from testing too soon after
-  # patching. Safe to put an auth-specific message on the DEFAULT_4XX
-  # catch-all here since our own Lambda-level 400/404 responses never go
-  # through GatewayResponse at all — those are ordinary successful Lambda
-  # executions that just happen to return a 4xx-flavored body.
-  GatewayResponseDefault4xx:
-    Type: AWS::ApiGateway::GatewayResponse
-    Properties:
-      RestApiId: !Ref XpensesApi
-      ResponseType: DEFAULT_4XX
-      ResponseParameters:
-        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
-        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
-      ResponseTemplates:
-        application/json: !Sub |
-          {
-            "message": "Missing, invalid, or expired authentication token, or a malformed request. Check CloudWatch logs for auth-authorizer-${StageName} for the specific reason if this was an auth failure."
-          }
-
-  GatewayResponseDefault5xx:
-    Type: AWS::ApiGateway::GatewayResponse
-    Properties:
-      RestApiId: !Ref XpensesApi
-      ResponseType: DEFAULT_5XX
-      ResponseParameters:
-        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
-        gatewayresponse.header.Access-Control-Allow-Headers: "'*'"
+      # CORS on API Gateway-level errors, above all the authorizer's 401
+      # (CognitoAuthorizerFunction raising Exception("Unauthorized")): without
+      # these headers the browser can't read it and reports a network error.
+      # Declared here, inside the API definition, not as separate
+      # AWS::ApiGateway::GatewayResponse resources: a deploy that changes the
+      # API definition rewrites it and silently dropped those. DEFAULT_4XX also
+      # covers UNAUTHORIZED, which inherits from it while not customized. Our
+      # own Lambda-level 400/404s never go through a gateway response, so the
+      # auth-specific message is safe on this catch-all.
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'*'"
+          ResponseTemplates:
+            application/json: !Sub |
+              {
+                "message": "Missing, invalid, or expired authentication token, or a malformed request. Check CloudWatch logs for auth-authorizer-${StageName} for the specific reason if this was an auth failure."
+              }
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+              Access-Control-Allow-Headers: "'*'"
 
   #########################################
   # Lambda: Cognito Authorizer (shared by any protected route)
@@ -134,10 +128,10 @@ Resources:
             - !Ref StageName
             - UserPoolId
 
-          COGNITO_APP_CLIENT_ID: !FindInMap
+          COGNITO_APP_CLIENT_IDS: !FindInMap
             - CognitoConfig
             - !Ref StageName
-            - AppClientId
+            - AppClientIds
 
           COGNITO_REGION: !FindInMap
             - CognitoConfig
@@ -173,10 +167,10 @@ Resources:
             - !Ref StageName
             - UserPoolId
 
-          COGNITO_APP_CLIENT_ID: !FindInMap
+          COGNITO_APP_CLIENT_IDS: !FindInMap
             - CognitoConfig
             - !Ref StageName
-            - AppClientId
+            - AppClientIds
 
           COGNITO_REGION: !FindInMap
             - CognitoConfig
