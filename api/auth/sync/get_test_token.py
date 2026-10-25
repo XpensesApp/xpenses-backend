@@ -10,6 +10,10 @@ identity provider, so a dedicated test user logs in with a real
 username+password and gets back a token indistinguishable from one a real
 Google-authenticated user would receive (same issuer/audience/claims).
 
+COGNITO_APP_CLIENT_ID can be any app client with ALLOW_USER_AUTH that's in
+COGNITO_APP_CLIENT_IDS (the frontend's public client works). Set
+COGNITO_APP_CLIENT_SECRET only if that client has a secret.
+
 Usage:
     PYTHONPATH=. python get_test_token.py --password 'Some$trongPass1'
     PYTHONPATH=. python get_test_token.py --email other@test --password '...'
@@ -30,7 +34,8 @@ except ImportError:
 
 USER_POOL_ID = os.environ["COGNITO_USER_POOL_ID"]
 APP_CLIENT_ID = os.environ["COGNITO_APP_CLIENT_ID"]
-APP_CLIENT_SECRET = os.environ["COGNITO_APP_CLIENT_SECRET"]
+# Only for an app client with a secret; a public client has none
+APP_CLIENT_SECRET = os.environ.get("COGNITO_APP_CLIENT_SECRET")
 
 client = boto3.client("cognito-idp")
 
@@ -71,17 +76,14 @@ def get_id_token(email: str, password: str) -> str:
     """Log in as the test user via Cognito's choice-based USER_AUTH flow and
     return a real ID token — the same shape auth/sync's verify_token() expects.
     """
-    secret_hash = _secret_hash(email)
+    auth_parameters = {"USERNAME": email, "PASSWORD": password, "PREFERRED_CHALLENGE": "PASSWORD"}
+    if APP_CLIENT_SECRET:
+        auth_parameters["SECRET_HASH"] = _secret_hash(email)
 
     response = client.initiate_auth(
         ClientId=APP_CLIENT_ID,
         AuthFlow="USER_AUTH",
-        AuthParameters={
-            "USERNAME": email,
-            "PASSWORD": password,
-            "PREFERRED_CHALLENGE": "PASSWORD",
-            "SECRET_HASH": secret_hash,
-        },
+        AuthParameters=auth_parameters,
     )
 
     # USER_AUTH can still come back as a challenge (e.g. NEW_PASSWORD_REQUIRED

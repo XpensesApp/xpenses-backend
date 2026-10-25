@@ -32,16 +32,16 @@ Mappings:
 
   CognitoConfig:
     # AppClientIds: comma-separated app clients whose ID tokens are accepted.
-    # 6bc94... is the old confidential client (Auth.js, and the one
-    # get_test_token.py uses); 2mqd6... the public client the frontend signs
-    # in with through Amplify. Drop the old one once nothing uses it.
+    # 2mqd6... is the public client the frontend signs in with through
+    # Amplify (get_test_token.py uses it too). List a second one only while
+    # moving users from one client to another.
     dev:
       UserPoolId: us-east-1_O00lHTebz
-      AppClientIds: 6bc94amej9csqr0du5p3bdmcvf,2mqd6elep72e757thv1v7grk7
+      AppClientIds: 2mqd6elep72e757thv1v7grk7
       Region: us-east-1
     prod:
       UserPoolId: us-east-1_O00lHTebz
-      AppClientIds: 6bc94amej9csqr0du5p3bdmcvf,2mqd6elep72e757thv1v7grk7
+      AppClientIds: 2mqd6elep72e757thv1v7grk7
       Region: us-east-1
 
 Resources:

@@ -169,7 +169,7 @@ cd api/auth/sync
 AWS_PROFILE=personal python get_test_token.py
 ```
 
-Needs `COGNITO_APP_CLIENT_ID`, `COGNITO_APP_CLIENT_SECRET` and `TEST_USER_PASSWORD` in `.env` (that app client has a secret, so Cognito requires a `SECRET_HASH` on every auth call). The client must also be in `COGNITO_APP_CLIENT_IDS`, or the API rejects the token it mints. Deliberately not exposed as a deployed endpoint — every current route is unprotected, so a token-minting endpoint on this same API would be reachable by anyone. When a dev/prod split exists, a real `POST` endpoint for this is planned, but gated to the dev stage only and still requiring real username+password (not free token issuance for arbitrary emails).
+Needs `COGNITO_APP_CLIENT_ID` and `TEST_USER_PASSWORD` in `.env`. The client can be any app client with `ALLOW_USER_AUTH`, such as the frontend's public one, and must be in `COGNITO_APP_CLIENT_IDS`, or the API rejects the token it mints. Set `COGNITO_APP_CLIENT_SECRET` only for a client with a secret (Cognito then requires a `SECRET_HASH` on every auth call). Deliberately not exposed as a deployed endpoint — every current route is unprotected, so a token-minting endpoint on this same API would be reachable by anyone. When a dev/prod split exists, a real `POST` endpoint for this is planned, but gated to the dev stage only and still requiring real username+password (not free token issuance for arbitrary emails).
 
 ## Shared Lambda Layer
 
