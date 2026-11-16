@@ -231,6 +231,10 @@ Resources:
             - TableNames
             - !Ref StageName
             - AccountsTableName
+          SUBSCRIPTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - SubscriptionsTableName
       Policies:
         - Statement:
             - Effect: Allow
@@ -259,6 +263,17 @@ Resources:
                       - TableNames
                       - !Ref StageName
                       - AccountsTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem # a linked subscriptionId must exist
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${SubscriptionsTable}
+                  - SubscriptionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - SubscriptionsTableName
       Events:
         AddTransaction:
           Type: Api
@@ -323,6 +338,10 @@ Resources:
             - TableNames
             - !Ref StageName
             - AccountsTableName
+          SUBSCRIPTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - SubscriptionsTableName
       Policies:
         - Statement:
             - Effect: Allow
@@ -351,6 +370,17 @@ Resources:
                       - TableNames
                       - !Ref StageName
                       - AccountsTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem # a new or changed subscriptionId must exist
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${SubscriptionsTable}
+                  - SubscriptionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - SubscriptionsTableName
       Events:
         EditTransaction:
           Type: Api
@@ -693,6 +723,10 @@ Resources:
             - TableNames
             - !Ref StageName
             - SubscriptionsTableName
+          TRANSACTIONS_TABLE: !FindInMap
+            - TableNames
+            - !Ref StageName
+            - TransactionsTableName
       Policies:
         - Statement:
             - Effect: Allow
@@ -706,6 +740,18 @@ Resources:
                       - TableNames
                       - !Ref StageName
                       - SubscriptionsTableName
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query # find the transactions linked to the subscription
+                - dynamodb:UpdateItem # category cascade
+              Resource:
+                - !Sub
+                  - arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TransactionsTable}
+                  - TransactionsTable: !FindInMap
+                      - TableNames
+                      - !Ref StageName
+                      - TransactionsTableName
       Events:
         EditSubscription:
           Type: Api

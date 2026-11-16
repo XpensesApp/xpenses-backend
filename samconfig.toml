@@ -10,3 +10,6 @@ capabilities = "CAPABILITY_IAM"
 parameter_overrides = "StageName=\"prod\""
 image_repositories = []
 disable_rollback = true
+
+[default.global.parameters]
+region = "us-east-1"

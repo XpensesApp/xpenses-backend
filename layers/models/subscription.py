@@ -9,6 +9,8 @@ from typing import Annotated, Optional
 
 import boto3
 import msgspec
+from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import ClientError
 
 from transaction import Transaction, TransactionType
 
@@ -111,6 +113,70 @@ def put_subscription(table, subscription: Subscription) -> None:
     item["type"] = subscription.type.value
     item["status"] = subscription.status.value
     table.put_item(Item=item)
+
+
+def subscription_exists(email: str, subscription_id: str) -> bool:
+    """Whether the user has a subscription with this id."""
+    result = get_subscriptions_table().get_item(
+        Key={"email": email, "subscriptionId": subscription_id},
+        ProjectionExpression="subscriptionId",
+    )
+    return "Item" in result
+
+
+# ---------- Linked transactions ----------
+# A transaction is linked to a subscription through Transaction.subscriptionId:
+# the bills the daily job generates, plus any transaction the user links by
+# hand (POST/PUT /transactions, any date, as many per cycle as they like). The
+# link is a plain attribute, not a key, so finding a subscription's
+# transactions reads the user's whole Transactions partition and filters it.
+# That's fine at one user's volume, and it's only needed on a rare write (a
+# category change); a GSI on subscriptionId would serve it if it ever isn't.
+def linked_transactions(transactions_table, email: str, subscription_id: str) -> list[dict]:
+    """Every transaction item of the user linked to the subscription, following LastEvaluatedKey."""
+    items = []
+    kwargs = {
+        "KeyConditionExpression": Key("email").eq(email),
+        "FilterExpression": Attr("subscriptionId").eq(subscription_id),
+        "ConsistentRead": True,  # include a transaction linked moments ago
+    }
+    while True:
+        result = transactions_table.query(**kwargs)
+        items.extend(result.get("Items", []))
+        if "LastEvaluatedKey" not in result:
+            return items
+        kwargs["ExclusiveStartKey"] = result["LastEvaluatedKey"]
+
+
+def cascade_categories(transactions_table, email: str, subscription_id: str, categories: list[str]) -> int:
+    """Set `categories` on every transaction linked to the subscription; returns how many changed.
+
+    Covers all of them, pending or settled, however old, and overwrites
+    categories that were changed by hand: a subscription's payments always
+    carry its categories. Only `categories` is written, so balances and card
+    statement amounts are unaffected and no other field can be clobbered.
+    Each write requires the item to still be linked to this subscription, so
+    a transaction unlinked or deleted meanwhile is skipped, never changed or
+    recreated.
+    """
+    updated = 0
+    for item in linked_transactions(transactions_table, email, subscription_id):
+        if item.get("categories") == categories:
+            continue
+        try:
+            transactions_table.update_item(
+                Key={"email": email, "sk": item["sk"]},
+                UpdateExpression="SET #categories = :categories",
+                ConditionExpression="#subscriptionId = :subscriptionId",
+                ExpressionAttributeNames={"#categories": "categories", "#subscriptionId": "subscriptionId"},
+                ExpressionAttributeValues={":categories": categories, ":subscriptionId": subscription_id},
+            )
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            continue
+        updated += 1
+    return updated
 
 
 def generate_transaction_from_subscription(subscription: Subscription, billing_date: date_) -> Transaction:

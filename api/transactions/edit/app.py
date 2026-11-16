@@ -18,6 +18,12 @@ it's missing and `date` didn't change, the stored value is kept, so a client
 that doesn't send it can't reset the time of day; when `date` changed, it
 falls back to 00:00 Chilean time on the new date.
 
+`subscriptionId` links the transaction to one of the caller's subscriptions.
+Like every field it's replaced: send it to link or change the link, send
+null (or omit it) to unlink. A new or changed link must point to an
+existing subscription (`400` otherwise); one kept as it was is accepted even
+if its subscription was deleted since.
+
 Account balances (see account.py) move from the old version's effect to the
 new one atomically with the write.
 
@@ -41,6 +47,7 @@ import msgspec
 from account import AccountNotFound, TransactionConflict, query_all_by_email, replace_transaction, swap_transactions
 from http_utils import get_authenticated_email, json_response
 from statement import parse_statement_item, sync_cards_touched_by
+from subscription import subscription_exists
 from transaction import build_sk, get_transactions_table, parse_transaction, transaction_to_item
 
 
@@ -111,6 +118,13 @@ def _handle(event):
         return json_response(400, {"message": f"Invalid transaction: {exc}"})
     if existing.get("statement"):
         transaction.statement = parse_statement_item(existing["statement"])
+
+    if (
+        transaction.subscriptionId
+        and transaction.subscriptionId != existing.get("subscriptionId")
+        and not subscription_exists(transaction.email, transaction.subscriptionId)
+    ):
+        return json_response(400, {"message": f"Subscription '{transaction.subscriptionId}' does not exist"})
 
     try:
         if transaction.sk == existing["sk"]:

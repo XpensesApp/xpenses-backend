@@ -1395,6 +1395,61 @@
           "response": []
         },
         {
+          "name": "Record Subscription Payment",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('todayDate', new Date().toISOString().split('T')[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "const data = pm.response.json();",
+                  "pm.test('linked to the subscription', () => pm.expect(data.subscriptionId).to.eql(pm.collectionVariables.get('subscriptionId')));",
+                  "pm.test('pending', () => pm.expect(data.pending).to.eql(true));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"title\": \"Netflix\",\n  \"amount\": \"9990\",\n  \"categories\": [\"subscriptions\", \"entertainment\"],\n  \"date\": \"{{todayDate}}\",\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"pending\": true,\n  \"subscriptionId\": \"{{subscriptionId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/transactions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "transactions"
+              ]
+            },
+            "description": "A subscription payment recorded by hand: a regular POST /transactions with subscriptionId set (run 'Create Subscription' first; {{todayDate}} is today, or type any YYYY-MM-DD). Any date, as many per billing cycle as you like; the daily billing job still generates its own bill. 201 with the transaction, subscriptionId included. 400 if subscriptionId isn't one of this token owner's subscriptions. On PUT /transactions, send subscriptionId to link or change the link, null to unlink."
+          },
+          "response": []
+        },
+        {
           "name": "List Subscriptions",
           "request": {
             "method": "GET",
@@ -1440,7 +1495,7 @@
                   "language": "json"
                 }
               },
-              "raw": "{\n  \"title\": \"Netflix (updated)\",\n  \"billingDay\": 22,\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"status\": \"disabled\",\n  \"amount\": \"10990\",\n  \"subscriptionId\": \"{{subscriptionId}}\"\n}"
+              "raw": "{\n  \"title\": \"Netflix (updated)\",\n  \"billingDay\": 22,\n  \"type\": \"expense\",\n  \"affectsBalance\": true,\n  \"status\": \"disabled\",\n  \"amount\": \"10990\",\n  \"categories\": [\"streaming\"],\n  \"subscriptionId\": \"{{subscriptionId}}\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/subscriptions",
@@ -1451,7 +1506,7 @@
                 "subscriptions"
               ]
             },
-            "description": "Full replace — run 'Create Subscription' first so {{subscriptionId}} is populated. 200 with the updated Subscription. 400 if subscriptionId is missing/invalid. 404 if no matching item exists for this token's owner. 401 if authToken is missing/invalid/expired."
+            "description": "Full replace — run 'Create Subscription' first so {{subscriptionId}} is populated. Changing categories cascades: every transaction linked to the subscription (e.g. the one from 'Record Subscription Payment'), pending or settled, gets the new categories. Omitting categories means [] and cascades too. 200 with the updated Subscription. 400 if subscriptionId is missing/invalid. 404 if no matching item exists for this token's owner. 401 if authToken is missing/invalid/expired."
           },
           "response": []
         },

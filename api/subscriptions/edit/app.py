@@ -8,6 +8,12 @@ edit their own subscriptions. The body must still include the original
 `subscriptionId` to identify the record, plus every field (existing values
 included) since this replaces the item rather than patching individual
 attributes.
+
+Changing `categories` cascades: every transaction linked to the
+subscription (Transaction.subscriptionId), pending or settled, gets the new
+categories, even if one had been changed by hand (see
+subscription.cascade_categories). The response is the updated subscription,
+as before.
 """
 import json
 import traceback
@@ -15,7 +21,8 @@ import traceback
 import msgspec
 
 from http_utils import get_authenticated_email, json_response
-from subscription import get_subscriptions_table, parse_subscription, put_subscription
+from subscription import cascade_categories, get_subscriptions_table, parse_subscription, put_subscription
+from transaction import get_transactions_table
 
 
 def lambda_handler(event, context):
@@ -52,6 +59,14 @@ def _handle(event):
     ).get("Item")
     if not existing:
         return json_response(404, {"message": "Subscription not found"})
+
+    if subscription.categories != (existing.get("categories") or []):
+        # Before saving the subscription: if this fails partway, the stored
+        # categories still differ, so retrying the same request finishes it.
+        updated = cascade_categories(
+            get_transactions_table(), subscription.email, subscription.subscriptionId, subscription.categories
+        )
+        print(f"Category cascade for subscription {subscription.subscriptionId}: {updated} transactions updated")
 
     put_subscription(table, subscription)
     return json_response(200, msgspec.to_builtins(subscription))

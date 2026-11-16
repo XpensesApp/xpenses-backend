@@ -9,6 +9,11 @@ themselves. Any "email" in the body is ignored/overwritten.
 `full_date_utc` (the exact moment, any UTC offset) is optional; without it
 the transaction is placed at 00:00 Chilean time on `date` (see transaction.py).
 
+`subscriptionId` (optional) links the transaction to one of the caller's
+subscriptions, e.g. a subscription payment recorded by hand. Any date and
+any number per billing cycle are allowed; the daily billing job still
+generates its own bill regardless. `400` if the subscription doesn't exist.
+
 The transaction and its effect on account balances (see account.py) are
 written atomically. `statement` is server-managed (only the card statements
 job creates statements), so it's dropped from the body. Afterwards, the
@@ -22,6 +27,7 @@ import msgspec
 from account import AccountNotFound, TransactionConflict, create_transaction
 from http_utils import get_authenticated_email, json_response
 from statement import sync_cards_touched_by
+from subscription import subscription_exists
 from transaction import parse_transaction, transaction_to_item
 
 
@@ -44,6 +50,9 @@ def _handle(event):
         transaction = parse_transaction(body)
     except (json.JSONDecodeError, msgspec.ValidationError) as exc:
         return json_response(400, {"message": f"Invalid transaction: {exc}"})
+
+    if transaction.subscriptionId and not subscription_exists(transaction.email, transaction.subscriptionId):
+        return json_response(400, {"message": f"Subscription '{transaction.subscriptionId}' does not exist"})
 
     try:
         create_transaction(transaction)
